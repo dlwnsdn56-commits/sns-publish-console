@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SNS 발행 콘솔</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="app">
+      <h1>SNS 발행 콘솔</h1>
+      <span class="tag">내부 · v1 · 로그인 없음</span>
+    </header>
+    <nav>
+      <a href="/" data-nav="/">새 발행</a>
+      <a href="/jobs" data-nav="/jobs">작업 목록</a>
+      <a href="/naver" data-nav="/naver">네이버 큐</a>
+    </nav>
+
+    <section id="view-publish" class="card hidden">
+      <h2>새 발행</h2>
+      <form id="publish-form">
+        <label class="field">
+          <span class="lbl">클라이언트</span>
+          <select name="clientId" id="clientId" required>
+            <option value="">선택</option>
+          </select>
+        </label>
+
+        <label class="field">
+          <span class="lbl">미디어 유형</span>
+          <div class="row">
+            <label><input type="radio" name="mediaType" value="video" checked /> 영상 1개</label>
+            <label><input type="radio" name="mediaType" value="images" /> 카드뉴스 (이미지 여러 장)</label>
+          </div>
+        </label>
+
+        <label class="field">
+          <span class="lbl">첨부 파일</span>
+          <input type="file" name="files" id="files" required />
+          <div class="hint" id="file-hint">영상 파일 1개를 선택하세요.</div>
+        </label>
+
+        <label class="field">
+          <span class="lbl">캡션</span>
+          <textarea name="caption" id="caption" placeholder="본문 / 캡션을 입력하세요."></textarea>
+        </label>
+
+        <label class="field">
+          <span class="lbl">예약 일시 (선택)</span>
+          <input type="datetime-local" name="scheduledAt" id="scheduledAt" />
+        </label>
+
+        <div class="field">
+          <span class="lbl">채널</span>
+          <div class="channels" id="channels"></div>
+        </div>
+
+        <button type="submit" id="submit-btn">발행 등록</button>
+        <p class="msg" id="publish-msg"></p>
+      </form>
+    </section>
+
+    <section id="view-jobs" class="card hidden">
+      <h2>작업 목록</h2>
+      <p class="hint">새로고침해도 저장됩니다. API 채널은 잠시 후 발행됨(시뮬)로 바뀝니다.</p>
+      <div id="jobs-table"></div>
+    </section>
+
+    <section id="view-naver" class="card hidden">
+      <h2>네이버 큐</h2>
+      <p class="hint">네이버 블로그 / 네이버 클립만 표시합니다. 실제 업로드는 하지 않으며, 수동 발행 후 완료로 표시하세요.</p>
+      <div id="naver-list"></div>
+    </section>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>

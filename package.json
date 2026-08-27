@@ -1,0 +1,14 @@
+{
+  "name": "sns-publish-console",
+  "version": "1.0.0",
+  "private": true,
+  "description": "내부 SNS 발행 콘솔 v1 (운영자 전용)",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "multer": "^1.4.5-lts.1"
+  }
+}
