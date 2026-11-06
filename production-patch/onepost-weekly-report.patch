@@ -1,6 +1,6 @@
 --- a/lib/weekly-report-pdf.js
 +++ b/lib/weekly-report-pdf.js
-@@ -0,0 +1,167 @@
+@@ -0,0 +1,154 @@
 +const fs = require("fs");
 +const path = require("path");
 +const PDFDocument = require("pdfkit");
@@ -52,65 +52,49 @@
 +      y = doc.y + 4;
 +    }
 +
-+    text(report.fixtureBanner || "운영 데이터 리포트", 10, "#8a5a00");
-+    text("요약", 16);
-+    text(report.storeName, 18);
-+    text(`기간 ${report.period.start} ~ ${report.period.end} (한국시간, ${report.period.days}일)`, 11);
-+    text(`마지막 수집 ${report.lastCollectedAtKst || "없음"}`, 10, "#444444");
-+    text(`이 문서 생성 ${report.generatedAtKst || ""}`, 10, "#444444");
++    const view = report.presentation;
++    text(report.fixtureBanner || "주간 리포트", 10, "#8a5a00");
++    text(report.storeName, 20);
++    text(`${report.period.start} ~ ${report.period.end} · 한국시간 · ${report.period.days}일`, 12);
++    text(`마지막 수집 ${report.lastCollectedAtKst || "없음"}`, 11);
++    text(`문서 작성 ${report.generatedAtKst || ""}`, 11);
++    text(report.coverage.headline, 13);
 +    text(report.disclaimer, 10);
-+    text(`수집이 있는 날 ${report.coverage.observedDates.join(", ") || "없음"}`, 10);
-+    text(`수집이 없는 날 ${report.coverage.missingDates.join(", ") || "없음"}`, 10);
-+    text(report.coverage.sevenDayDeltaEligible ? "7일 경계 비교를 계산했습니다." : "7일 델타와 이전 주 비교는 만들 수 없습니다.", 10);
-+    for (const line of report.suggestions) text(line, 10);
-+    text(`발행 작업 ${report.publishing.uploadJobs}건 · 채널 작업 ${report.publishing.channelPublishTasks}건 · 동영상 1개 업로드 ${report.publishing.singleVideoUploads}건`, 10);
-+    text(report.publishing.identity, 9, "#444444");
-+    if (!report.viewSums.length) text("같은 정의로 겹치는 채널 조회 합계는 없습니다.", 10);
-+    for (const sum of report.viewSums) {
-+      text(`${sum.label} ${sum.value} (${sum.definition}, ${sum.fromDate}~${sum.toDate})`, 10);
++    text(`올린 작업 ${report.publishing.uploadJobs}건 · 채널에 올린 횟수 ${report.publishing.channelPublishTasks}건`, 11);
++    if (!view.cards.length) text("이 기간에 표시할 숫자가 없습니다.", 12);
++    for (const card of view.cards) {
++      text(`${card.channel} ${card.label}  ${card.value}`, 12);
++      text(`${card.sub}${card.span ? " · " + card.span : ""}`, 9, "#444444");
 +    }
-+    text("채널별 내용은 다음 장부터입니다.", 10, "#444444");
++    for (const sum of report.viewSums) text(`${sum.label} ${sum.value}`, 11);
++    text("숫자가 있는 채널은 다음 장에 있습니다.", 10, "#444444");
 +
-+    newPage();
-+    text("채널 상세", 16);
-+    for (const channel of report.channels) {
-+      if (y > 560) newPage();
-+      y += 6;
-+      text(channel.label, 14);
-+      const who = channel.account && channel.account.displayName ? ` · ${channel.account.displayName}` : "";
-+      text(`${channel.status.label}${who}`, 10);
-+      text(channel.posts.reason, 9, "#444444");
-+      if (!channel.metrics.length) {
-+        text("표시할 조회 지표 정의가 없습니다.", 10);
-+        continue;
-+      }
-+      for (const metric of channel.metrics) {
-+        text(`${metric.label} (${metric.unit}) ${metric.definition}`, 9, "#333333");
-+        if (metric.asOf) {
-+          text(`기준 ${metric.asOf.date} 값 ${metric.asOf.value} ${metric.unit} · ${metric.asOf.stateLabel}`, 10);
-+          if (metric.asOf.atKst) text(`그 값의 수집 시각 ${metric.asOf.atKst}`, 9, "#444444");
-+        } else text("이 기간의 기준 숫자가 없습니다.", 10);
-+        if (metric.kind === "period_occurring") {
-+          text(metric.periodOccurring.eligible ? metric.periodOccurring.label : metric.periodOccurring.reason, 10);
-+        } else if (metric.observedSpan.eligible) {
-+          text(`관측 구간 차이 ${metric.observedSpan.difference} ${metric.unit} (${metric.observedSpan.label}, ${metric.observedSpan.spanDays}일 간격). 빠진 날을 잇지 않습니다.`, 10);
-+        } else text(metric.observedSpan.reason, 10);
-+        text(metric.windowBoundaryDelta.eligible ? `기간 경계 차이 ${metric.windowBoundaryDelta.label}` : metric.windowBoundaryDelta.reason, 10);
-+        text(metric.comparison.eligible ? `이전 주 ${metric.comparison.text}` : metric.comparison.text, 10);
-+        const shown = metric.cells.filter((cell) => cell.state !== "absent");
-+        if (!shown.length) text("표에 넣을 수집 행이 없습니다.", 9, "#444444");
-+        for (const cell of shown) {
-+          const value = cell.value == null ? "값 없음" : `${cell.value} ${metric.unit}`;
-+          text(`${cell.date} ${cell.stateLabel} ${value}${cell.atKst ? " · " + cell.atKst : ""}`, 8, "#333333");
-+          if (cell.reason) text(cell.reason, 8, "#555555");
-+        }
-+        if (metric.cells.some((cell) => cell.state === "available" || cell.state === "actual_zero")) {
++    if (view.detailChannels.length) {
++      newPage();
++      text("채널", 16);
++      for (const channel of view.detailChannels) {
++        if (y > 560) newPage();
++        text(`${channel.label}${channel.account && channel.account.displayName ? " · " + channel.account.displayName : ""}`, 14);
++        text(channel.status.label, 10, "#444444");
++        text(channel.posts.reason, 10);
++        for (const metric of channel.shownMetrics) {
++          text(`${metric.label} ${metric.asOf ? metric.asOf.value + metric.unit : ""} · ${metric.asOf ? metric.asOf.stateLabel : ""}`, 11);
++          if (metric.customerSpan) text(metric.customerSpan, 9, "#444444");
++          if (metric.comparison.eligible) text(`전주 ${metric.comparison.text}`, 10);
 +          ensure(130);
 +          drawChart(doc, metric, left, y, width, 108);
 +          y += 116;
 +        }
 +      }
 +    }
++    if (view.statusRows.length) {
++      if (y + 28 + view.statusRows.length * 16 > bottom) newPage();
++      text("데이터 현황", 14);
++      for (const row of view.statusRows) text(`${row.label} · ${row.note}`, 10);
++    }
++    if (y > 640) newPage();
++    text("집계 기준", 12);
++    for (const line of view.criteria) text(line, 8, "#444444");
 +    doc.end();
 +  });
 +}
@@ -124,7 +108,10 @@
 +  const numeric = cells.filter((cell) => cell.state === "available" || cell.state === "actual_zero");
 +  const min = Math.min(...numeric.map((cell) => cell.value));
 +  const max = Math.max(...numeric.map((cell) => cell.value));
-+  const span = max - min || 1;
++  const pad = (max - min) * 0.18 || 1;
++  const yMin = min - pad;
++  const yMax = max + pad;
++  const span = yMax - yMin;
 +  doc.save();
 +  doc.font("kr").fontSize(8).fillColor("#333333");
 +  doc.text(`${metric.label} (${metric.unit})`, x, y, { width });
@@ -136,7 +123,7 @@
 +  cells.forEach((cell, index) => {
 +    const px = plotX + (n === 1 ? plotW / 2 : (index / (n - 1)) * plotW);
 +    const plotted = cell.state === "available" || cell.state === "actual_zero";
-+    const py = plotted ? plotY + plotH - ((cell.value - min) / span) * plotH : null;
++    const py = plotted ? plotY + plotH - ((cell.value - yMin) / span) * plotH : null;
 +    coords.push({ cell, px, py, plotted });
 +    doc.moveTo(px, plotY + plotH).lineTo(px, plotY + plotH + 3).strokeColor("#bbbbbb").stroke();
 +  });
@@ -170,7 +157,7 @@
 +module.exports = { renderWeeklyReportPdf, fontAvailable, FONT };
 --- a/lib/weekly-report.js
 +++ b/lib/weekly-report.js
-@@ -0,0 +1,487 @@
+@@ -0,0 +1,532 @@
 +/**
 + * Store weekly report from existing snapshots and publish jobs.
 + * Does not call providers and does not write snapshot files.
@@ -213,24 +200,24 @@
 +
 +const METRICS = {
 +  youtube: [
-+    { key: "views", label: "누적 조회수", unit: "회", kind: "cumulative", definition: "channels.list statistics.viewCount. 기간 발생 조회수가 아닙니다.", comparable: "youtube_channel_view_count" },
-+    { key: "followers", label: "누적 구독자", unit: "명", kind: "cumulative", definition: "statistics.subscriberCount. 기준 시각의 누적값입니다.", comparable: null },
-+    { key: "videos", label: "누적 동영상 수", unit: "개", kind: "cumulative", definition: "statistics.videoCount.", comparable: null },
++    { key: "views", label: "누적 조회수", unit: "회", kind: "cumulative", definition: "채널에 쌓인 조회수입니다. 그 주에 새로 생긴 조회수만 뜻하지는 않습니다.", comparable: "youtube_channel_view_count" },
++    { key: "followers", label: "구독자", unit: "명", kind: "cumulative", definition: "기준 시각의 구독자 수입니다.", comparable: null },
++    { key: "videos", label: "동영상 수", unit: "개", kind: "cumulative", definition: "기준 시각의 동영상 수입니다.", comparable: null },
 +  ],
 +  tiktok: [
-+    { key: "views", label: "영상 조회수 합계", unit: "회", kind: "cumulative", definition: "수집 시각에 video.list view_count 를 더한 값입니다. 채널 누적 조회수와 같은 정의가 아닙니다.", comparable: "tiktok_listed_video_view_sum" },
-+    { key: "followers", label: "누적 팔로워", unit: "명", kind: "cumulative", definition: "user.info follower_count. 기준 시각의 누적값입니다.", comparable: null },
-+    { key: "likes", label: "누적 좋아요", unit: "개", kind: "cumulative", definition: "user.info likes_count.", comparable: null },
-+    { key: "videos", label: "누적 동영상 수", unit: "개", kind: "cumulative", definition: "user.info video_count 또는 목록으로 센 개수입니다.", comparable: null },
++    { key: "views", label: "영상 조회수 합", unit: "회", kind: "cumulative", definition: "수집 당시 영상들의 조회수를 더한 값입니다. 유튜브 누적 조회수와는 다릅니다.", comparable: "tiktok_listed_video_view_sum" },
++    { key: "followers", label: "팔로워", unit: "명", kind: "cumulative", definition: "기준 시각의 팔로워 수입니다.", comparable: null },
++    { key: "likes", label: "좋아요", unit: "개", kind: "cumulative", definition: "기준 시각까지 받은 좋아요 수입니다.", comparable: null },
++    { key: "videos", label: "동영상 수", unit: "개", kind: "cumulative", definition: "기준 시각의 동영상 수입니다.", comparable: null },
 +  ],
 +  instagram: [
-+    { key: "dayViews", label: "하루 조회", unit: "회", kind: "period_occurring", definition: "insights views, period day. 그 날짜에 값이 있을 때만 하루 발생 조회입니다.", comparable: null },
-+    { key: "followers", label: "누적 팔로워", unit: "명", kind: "cumulative", definition: "graph /me followers_count. 기준 시각의 누적값입니다.", comparable: null },
-+    { key: "videos", label: "미디어 수", unit: "개", kind: "cumulative", definition: "graph /me media_count.", comparable: null },
++    { key: "dayViews", label: "하루 조회", unit: "회", kind: "period_occurring", definition: "그 날짜에 기록이 있을 때만 하루 동안의 조회입니다.", comparable: null },
++    { key: "followers", label: "팔로워", unit: "명", kind: "cumulative", definition: "기준 시각의 팔로워 수입니다.", comparable: null },
++    { key: "videos", label: "게시물 수", unit: "개", kind: "cumulative", definition: "기준 시각의 게시물 수입니다.", comparable: null },
 +  ],
 +  threads: [
-+    { key: "dayViews", label: "하루 조회", unit: "회", kind: "period_occurring", definition: "threads_insights views. 그 날짜에 값이 있을 때만 사용합니다.", comparable: null },
-+    { key: "followers", label: "누적 팔로워", unit: "명", kind: "cumulative", definition: "threads_insights followers_count. 기준 시각의 누적값입니다.", comparable: null },
++    { key: "dayViews", label: "하루 조회", unit: "회", kind: "period_occurring", definition: "그 날짜에 기록이 있을 때만 하루 동안의 조회입니다.", comparable: null },
++    { key: "followers", label: "팔로워", unit: "명", kind: "cumulative", definition: "기준 시각의 팔로워 수입니다.", comparable: null },
 +  ],
 +};
 +
@@ -543,30 +530,72 @@
 +    uploadJobs: mine.length,
 +    channelPublishTasks: tasks.length,
 +    singleVideoUploads: singleVideoJobs,
-+    identity: "파일 바이트가 같은지 확인할 식별자는 없습니다. 서로 다른 발행 작업은 하나로 합치지 않습니다. 동영상 파일 1개인 발행 작업 수와 채널 작업 수를 따로 보여 줍니다.",
++    identity: "같은 영상인지는 파일 내용으로 구분하지 못했습니다. 올린 작업 수와 채널에 올린 횟수를 따로 적습니다.",
 +  };
 +}
 +
-+function suggestions(report) {
-+  const lines = [];
-+  if (!report.coverage.observedDates.length) {
-+    lines.push("이 기간에 이 가게의 수집점이 없습니다.");
-+  } else if (!report.coverage.sevenDayDeltaEligible) {
-+    lines.push(`선택 기간 ${report.period.days}일 중 수집이 있는 날은 ${report.coverage.observedDates.length}일입니다. 7일 델타와 이전 주 비교는 만들 수 없습니다.`);
++function channelHasNumbers(channel) {
++  return channel.metrics.some((metric) => metric.series.length > 0);
++}
++
++function coverageHeadline(period, coverage) {
++  const seen = coverage.observedDates.length;
++  if (period.days === 7) {
++    return coverage.priorWeekEligible
++      ? `${period.days}일 중 ${seen}일 수집 · 전주 비교를 표시합니다`
++      : `${period.days}일 중 ${seen}일 수집 · 전주 비교는 자료 부족`;
 +  }
-+  const spans = [];
++  return coverage.priorWeekEligible
++    ? `${period.days}일 중 ${seen}일 수집 · 이전 기간 비교를 표시합니다`
++    : `${period.days}일 중 ${seen}일 수집 · 이전 기간 비교는 자료 부족`;
++}
++
++function statusNote(channel) {
++  if (channel.status.code === "unconnected") return "연결 안 됨";
++  if (channel.status.code === "unsupported") return "조회를 모으지 않는 채널";
++  if (channel.status.code === "unknown") return "계정 정보를 확인하지 못했습니다";
++  const error = channel.metrics.some((metric) => metric.cells.some((cell) => cell.state === "collection_error"));
++  if (error) return "수집 중 오류가 있습니다";
++  return "이 기간에 숫자가 없습니다";
++}
++
++function presentReport(report) {
++  const cards = [];
++  const detailChannels = [];
++  const statusRows = [];
 +  for (const channel of report.channels) {
-+    for (const metric of channel.metrics) {
-+      if (metric.kind === "cumulative" && metric.key === "views" && metric.observedSpan.eligible) {
-+        spans.push(`${channel.label} 누적 조회수 ${metric.observedSpan.label} (${metric.observedSpan.spanDays}일 간격)`);
-+      }
++    if (!channelHasNumbers(channel)) {
++      statusRows.push({ label: channel.label, status: channel.status.label, note: statusNote(channel) });
++      continue;
++    }
++    const metrics = channel.metrics.filter((metric) => metric.series.length > 0).map((metric) => ({
++      ...metric,
++      customerSpan: metric.observedSpan.eligible
++        ? `${metric.observedSpan.fromDate} ${metric.observedSpan.fromValue}${metric.unit}에서 ${metric.observedSpan.toDate} ${metric.observedSpan.toValue}${metric.unit}. 차이 ${metric.observedSpan.difference}${metric.unit}, ${metric.observedSpan.spanDays}일 간격`
++        : "",
++    }));
++    detailChannels.push({ ...channel, shownMetrics: metrics });
++    for (const metric of metrics) {
++      if (!metric.asOf || metric.asOf.value == null) continue;
++      cards.push({
++        channel: channel.label,
++        label: metric.label,
++        value: `${metric.asOf.value}${metric.unit}`,
++        sub: metric.asOf.state === "ambiguous_zero" ? metric.asOf.stateLabel : `${metric.asOf.date} 기준`,
++        span: metric.customerSpan,
++      });
 +    }
 +  }
-+  if (spans.length) lines.push(`관측된 수집점 차이만 계산했습니다. ${spans.join(". ")}.`);
-+  const ambiguous = report.channels.some((channel) => channel.metrics.some((metric) => metric.cells.some((cell) => cell.state === "ambiguous_zero")));
-+  if (ambiguous) lines.push("YouTube에 0으로 저장된 값은 실제 0으로 단정하지 않았습니다.");
-+  if (!lines.length) lines.push("표시한 숫자는 이 가게의 스냅샷과 발행 기록에 있는 값입니다.");
-+  return lines;
++  const criteria = [
++    `수집이 없는 날: ${report.coverage.missingDates.join(", ") || "없음"}. 이 날들은 0이 아닙니다.`,
++    "그래프 선은 바로 다음 날에 숫자가 있을 때만 잇습니다.",
++    "전주 비교는 7일의 첫날과 마지막 날에 같은 항목의 숫자가 있을 때만 합니다.",
++    "유튜브에 0으로 저장된 값은 2026-11-06 13:27 한국시간 이전 수집이면 실제 0으로 단정하지 않습니다.",
++    "게시물마다의 조회수는 저장되어 있지 않습니다.",
++    report.publishing.identity,
++    "유튜브 조회수는 채널에 쌓인 누적 조회수입니다. 틱톡 조회수는 그때 확인한 영상 조회수의 합입니다. 둘을 하나의 합계로 만들지 않습니다.",
++  ];
++  return { cards, detailChannels, statusRows, criteria };
 +}
 +
 +function buildWeeklyReport({ email, client, snapshots, connections, jobs, end, days, now, generatedAt, fixtureBanner }) {
@@ -590,7 +619,7 @@
 +      status,
 +      account: accountOf(conns[platform.id]),
 +      metrics,
-+      posts: { available: false, reason: "게시물별 조회수는 저장되어 있지 않습니다. 막대그래프를 그리지 않습니다." },
++      posts: { available: false, reason: "게시물별 통계 미수집" },
 +    };
 +  });
 +  const sevenDayDeltaEligible = window.days === 7 && channels.some((channel) => channel.metrics.some((metric) => metric.windowBoundaryDelta.eligible));
@@ -613,12 +642,15 @@
 +      missingDates: window.dates.filter((date) => !observedDates.includes(date)),
 +      sevenDayDeltaEligible,
 +      priorWeekEligible,
++      headline: "",
 +    },
 +    publishing: publishingReport(jobs, email, client.id, window),
 +    viewSums: viewSum(channels),
 +    channels,
 +  };
-+  report.suggestions = suggestions(report);
++  report.coverage.headline = coverageHeadline(report.period, report.coverage);
++  report.presentation = presentReport(report);
++  report.suggestions = [report.coverage.headline];
 +  return report;
 +}
 +
@@ -1733,7 +1765,7 @@
    }
  
    function sidebarMsg(text, ok) {
-@@ -4582,6 +4589,142 @@
+@@ -4582,6 +4589,125 @@
      }
    }
  
@@ -1749,10 +1781,13 @@
 +    const vals = points.map((p) => p.value);
 +    const min = Math.min.apply(null, vals);
 +    const max = Math.max.apply(null, vals);
-+    const span = max - min || 1;
++    const pad = (max - min) * 0.18 || 1;
++    const yMin = min - pad;
++    const yMax = max + pad;
++    const span = yMax - yMin;
 +    const n = cells.length;
 +    const xAt = (i) => 48 + (n === 1 ? (w - 64) / 2 : (i / (n - 1)) * (w - 64));
-+    const yAt = (value) => 28 + (1 - (value - min) / span) * 100;
++    const yAt = (value) => 28 + (1 - (value - yMin) / span) * 100;
 +    let d = "";
 +    let prev = null;
 +    cells.forEach((cell, i) => {
@@ -1788,49 +1823,29 @@
 +  }
 +
 +  function renderWeeklyReportView(data) {
++    const view = data.presentation || { cards: [], detailChannels: [], statusRows: [], criteria: [] };
 +    const banner = data.fixtureBanner ? `<div class="report-banner">${esc(data.fixtureBanner)}</div>` : "";
-+    const coverage = `수집 있는 날 ${data.coverage.observedDates.length}일 (${(data.coverage.observedDates || []).join(", ") || "없음"}). 없는 날 ${(data.coverage.missingDates || []).length}일. ${data.coverage.sevenDayDeltaEligible ? "7일 경계 비교가 있습니다." : "7일 델타와 이전 주 비교는 없습니다."}`;
-+    const sums = (data.viewSums || []).map((sum) => `<p>${esc(sum.label)} ${esc(sum.value)} (${esc(sum.definition)})</p>`).join("") || "<p class='ic-note'>같은 정의의 조회 합계는 없습니다.</p>";
-+    const suggestions = (data.suggestions || []).map((line) => `<li>${esc(line)}</li>`).join("");
-+    const channels = (data.channels || []).map((ch) => {
-+      const metrics = (ch.metrics || []).map((metric) => {
-+        const asOf = metric.asOf
-+          ? `${esc(metric.asOf.date)} ${esc(metric.asOf.value)} (${esc(metric.asOf.stateLabel || "")})`
-+          : "기준 숫자 없음";
-+        const span = metric.observedSpan && metric.observedSpan.eligible
-+          ? `관측 차이 ${esc(metric.observedSpan.difference)} · ${esc(metric.observedSpan.label)} · ${esc(metric.observedSpan.spanDays)}일 간격`
-+          : esc(metric.observedSpan ? metric.observedSpan.reason : "");
-+        const boundary = metric.windowBoundaryDelta && metric.windowBoundaryDelta.eligible
-+          ? esc(metric.windowBoundaryDelta.label)
-+          : esc(metric.windowBoundaryDelta ? metric.windowBoundaryDelta.reason : "");
-+        const occurring = metric.periodOccurring
-+          ? esc(metric.periodOccurring.eligible ? metric.periodOccurring.label : metric.periodOccurring.reason)
-+          : "";
-+        return `<div class="ic-note"><b>${esc(metric.label)}</b> ${esc(metric.definition || "")}</div>
-+          <div class="ic-row"><span>기준 시각 누적/값</span><span>${asOf}</span></div>
-+          <div class="ic-note">${span}</div>
-+          <div class="ic-note">${boundary}</div>
-+          <div class="ic-note">${occurring}</div>
-+          <div class="ic-note">${esc(metric.comparison ? metric.comparison.text : "")}</div>
-+          ${reportSvg(metric)}`;
-+      }).join("");
-+      return `<article class="insight-card" id="report-${esc(ch.platform)}">
-+        <div class="ic-head"><span class="ic-name">${esc(ch.label)}</span><span>${esc(ch.status ? ch.status.label : "")}</span></div>
-+        <div class="ic-row"><span>계정</span><span>${esc(ch.account && ch.account.displayName ? ch.account.displayName : "계정 정보 없음")}</span></div>
-+        <p class="ic-note">${esc(ch.posts ? ch.posts.reason : "")}</p>
-+        ${metrics || "<p class='ic-note'>조회 지표 정의가 없습니다.</p>"}
-+      </article>`;
++    const cards = view.cards.length
++      ? `<div class="report-cards">${view.cards.map((card) => `<article class="insight-card"><div class="ic-note">${esc(card.channel)} · ${esc(card.label)}</div><div class="report-card-value">${esc(card.value)}</div><div class="ic-note">${esc(card.sub)}</div>${card.span ? `<div class="ic-note">${esc(card.span)}</div>` : ""}</article>`).join("")}</div>`
++      : `<p class="ic-note">이 기간에 표시할 숫자가 없습니다.</p>`;
++    const details = (view.detailChannels || []).map((ch) => {
++      const metrics = (ch.shownMetrics || []).map((metric) => `<h3>${esc(metric.label)}</h3><p class="ic-note">${esc(metric.definition || "")}</p>${metric.customerSpan ? `<p>${esc(metric.customerSpan)}</p>` : ""}${metric.comparison && metric.comparison.eligible ? `<p>전주 ${esc(metric.comparison.text)}</p>` : ""}${reportSvg(metric)}`).join("");
++      return `<section class="insight-card"><div class="ic-head"><span class="ic-name">${esc(ch.label)}</span><span>${esc(ch.account && ch.account.displayName ? ch.account.displayName : ch.status.label)}</span></div><p>${esc(ch.posts.reason)}</p>${metrics}</section>`;
 +    }).join("");
++    const rows = (view.statusRows || []).map((row) => `<tr><td>${esc(row.label)}</td><td>${esc(row.note)}</td></tr>`).join("");
++    const table = rows ? `<h3>데이터 현황</h3><table class="analysis-table"><thead><tr><th>채널</th><th>상태</th></tr></thead><tbody>${rows}</tbody></table>` : "";
++    const criteria = (view.criteria || []).map((line) => `<li>${esc(line)}</li>`).join("");
 +    return `${banner}
-+      <p><b>${esc(data.storeName)}</b> · ${esc(data.period.start)} ~ ${esc(data.period.end)} (Asia/Seoul)</p>
-+      <p class="ic-note">마지막 수집 ${esc(data.lastCollectedAtKst || "없음")} · 화면 생성 ${esc(data.generatedAtKst || "")}</p>
++      <p class="report-kicker">${esc(data.storeName)}</p>
++      <p class="report-period">${esc(data.period.start)} ~ ${esc(data.period.end)} · 한국시간</p>
++      <p class="report-headline">${esc(data.coverage.headline || "")}</p>
++      <p class="ic-note">마지막 수집 ${esc(data.lastCollectedAtKst || "없음")} · 문서 작성 ${esc(data.generatedAtKst || "")}</p>
 +      <p>${esc(data.disclaimer || "")}</p>
-+      <p>${esc(coverage)}</p>
-+      <p>발행 작업 ${esc(data.publishing.uploadJobs)}건, 채널 작업 ${esc(data.publishing.channelPublishTasks)}건, 동영상 파일 1개 작업 ${esc(data.publishing.singleVideoUploads)}건</p>
-+      <p class="ic-note">${esc(data.publishing.identity)}</p>
-+      ${sums}
-+      <ul>${suggestions}</ul>
-+      <div class="analysis-list">${channels}</div>`;
++      <p>올린 작업 ${esc(data.publishing.uploadJobs)}건 · 채널에 올린 횟수 ${esc(data.publishing.channelPublishTasks)}건</p>
++      ${cards}
++      ${details}
++      ${table}
++      <details class="report-criteria"><summary>집계 기준</summary><ul>${criteria}</ul></details>`;
 +  }
 +
 +  async function renderWeeklyReport() {
@@ -1911,10 +1926,16 @@
        <section id="view-mania" class="hidden">
 --- a/public/styles.css
 +++ b/public/styles.css
-@@ -2420,6 +2420,10 @@
+@@ -2420,6 +2420,16 @@
  .insights-store-nums span { display: block; font-size: 12px; color: var(--muted); }
  .insights-store-nums b { font-size: 18px; }
  .analysis-list { display: flex; flex-direction: column; gap: 12px; }
++.report-kicker { margin: 0; color: var(--muted); font-size: 13px; }
++.report-period { margin: 2px 0 8px; font-size: 22px; font-weight: 800; }
++.report-headline { margin: 0 0 12px; font-size: 16px; font-weight: 700; }
++.report-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; margin: 12px 0; }
++.report-card-value { font-size: 28px; font-weight: 800; line-height: 1.2; }
++.report-criteria { margin-top: 16px; font-size: 13px; color: var(--muted); }
 +.report-toolbar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 12px; }
 +.report-toolbar input[type="date"] { width: auto; }
 +.report-banner { border: 1px solid #ead9b0; background: #fff8e8; padding: 10px 12px; margin-bottom: 12px; font-size: 13px; }
@@ -1987,7 +2008,7 @@
  
 --- a/test/weekly-report.test.js
 +++ b/test/weekly-report.test.js
-@@ -0,0 +1,299 @@
+@@ -0,0 +1,307 @@
 +const fs = require("fs");
 +const os = require("os");
 +const path = require("path");
@@ -2094,7 +2115,7 @@
 +  assert.equal(report.publishing.uploadJobs, 1);
 +  assert.equal(report.publishing.channelPublishTasks, 2);
 +  assert.equal(report.publishing.singleVideoUploads, 1);
-+  assert.equal(report.publishing.identity.includes("식별자는 없습니다"), true);
++  assert.equal(report.publishing.identity.includes("구분하지 못했습니다"), true);
 +  assert.equal(report.channels.find((ch) => ch.platform === "youtube").posts.available, false);
 +  assert.equal(report.viewSums.length, 0);
 +});
@@ -2232,6 +2253,7 @@
 +      lastRunAt: "2026-11-05T15:21:01.000Z",
 +      days: {
 +        "2026-11-04": { [`${EMAIL}|store-shape|youtube`]: yt("2026-11-04", 100, 0) },
++        "2026-11-05": { [`${EMAIL}|store-shape|youtube`]: yt("2026-11-05", null, 4) },
 +        "2026-11-06": { [`${EMAIL}|store-shape|youtube`]: yt("2026-11-06", 140, 12) },
 +      },
 +    },
@@ -2257,16 +2279,23 @@
 +  assert.equal(text.includes("YouTube"), true);
 +  assert.equal(text.includes("TikTok"), true);
 +  assert.equal(text.includes("네이버 블로그"), true);
-+  assert.equal(text.includes("7일 델타와 이전 주 비교는 만들 수 없습니다."), true);
++  assert.equal(text.includes("7일 중 3일 수집 · 전주 비교는 자료 부족"), true);
++  assert.equal(text.includes("channels.list"), false);
++  assert.equal(text.includes("statistics."), false);
++  assert.equal(text.includes("graph /me"), false);
++  assert.equal(text.includes("delta"), false);
++  assert.equal(text.includes("막대그래프"), false);
 +  assert.equal(text.includes("OTHER-SECRET"), false);
 +  assert.equal(text.includes("%"), false);
 +  const page1 = execFileSync("pdftotext", ["-f", "1", "-l", "1", "-layout", file, "-"], { encoding: "utf8" });
 +  const page2 = execFileSync("pdftotext", ["-f", "2", "-l", "2", "-layout", file, "-"], { encoding: "utf8" });
 +  assert.equal(page1.includes(DISCLAIMER), true);
 +  assert.equal(page1.includes("한국시간"), true);
-+  assert.equal(page1.includes("게시물별 조회수"), false);
++  assert.equal(page1.includes("게시물별"), false);
++  assert.equal(page1.includes(report.coverage.headline), true);
 +  assert.equal(page2.includes("YouTube"), true);
-+  assert.equal(page2.includes("게시물별 조회수"), true);
++  assert.equal(page2.includes("게시물별 통계 미수집"), true);
++  assert.equal(text.includes("데이터 현황"), true);
 +  assert.equal(text.includes("ambiguous_zero"), false);
 +  assert.equal(text.includes(" available"), false);
 +  assert.equal(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(text), false);
