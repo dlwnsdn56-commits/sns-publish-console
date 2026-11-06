@@ -1,0 +1,1106 @@
+--- a/lib/weekly-report-pdf.js
++++ b/lib/weekly-report-pdf.js
+@@ -0,0 +1,121 @@
++const fs = require("fs");
++const path = require("path");
++const PDFDocument = require("pdfkit");
++
++const FONT = path.join(__dirname, "..", "assets", "fonts", "NotoSansKR-Regular.ttf");
++
++function fontAvailable() {
++  return fs.existsSync(FONT);
++}
++
++function renderWeeklyReportPdf(report) {
++  if (!fontAvailable()) {
++    const err = new Error("한국어 글꼴 파일이 없습니다.");
++    err.code = "FONT_MISSING";
++    throw err;
++  }
++  return new Promise((resolve, reject) => {
++    const doc = new PDFDocument({ size: "A4", margin: 40, info: { Title: "원포스트 주간 리포트" } });
++    const chunks = [];
++    doc.on("data", (chunk) => chunks.push(chunk));
++    doc.on("end", () => resolve(Buffer.concat(chunks)));
++    doc.on("error", reject);
++    doc.registerFont("kr", FONT);
++    doc.font("kr");
++    const left = 40;
++    const width = 515;
++    let y = 40;
++
++    function ensure(height) {
++      if (y + height <= 800) return;
++      doc.addPage();
++      y = 40;
++      doc.fontSize(9).fillColor("#666666").text(`${report.storeName} · ${report.period.start} ~ ${report.period.end} Asia/Seoul`, left, y, { width });
++      y = doc.y + 8;
++    }
++
++    function text(value, size, color) {
++      ensure(size + 8);
++      doc.fontSize(size).fillColor(color || "#111111").text(String(value), left, y, { width });
++      y = doc.y + 4;
++    }
++
++    text(report.fixtureBanner || "운영 데이터 리포트", 10, "#8a5a00");
++    text(report.storeName, 18);
++    text(`기간 ${report.period.start} ~ ${report.period.end} (Asia/Seoul, ${report.period.days}일)`, 11);
++    text(`마지막 수집 ${report.lastCollectedAt || "없음"}`, 10, "#444444");
++    text(`이 문서 생성 ${report.generatedAt}`, 10, "#444444");
++    text(report.disclaimer, 10);
++    text(`수집이 있는 날 ${report.coverage.observedDates.join(", ") || "없음"}`, 10);
++    text(`수집이 없는 날 ${report.coverage.missingDates.join(", ") || "없음"}`, 10);
++    text(report.coverage.sevenDayDeltaEligible ? "7일 경계 비교를 계산했습니다." : "7일 델타와 이전 주 비교는 만들 수 없습니다.", 10);
++    for (const line of report.suggestions) text(line, 10);
++    text(`발행 작업 ${report.publishing.uploadJobs}건 · 채널 작업 ${report.publishing.channelPublishTasks}건 · 동영상 1개 업로드 ${report.publishing.singleVideoUploads}건`, 10);
++    text(report.publishing.identity, 9, "#444444");
++    if (!report.viewSums.length) text("같은 정의로 겹치는 채널 조회 합계는 없습니다.", 10);
++    for (const sum of report.viewSums) text(`${sum.label} ${sum.value} (${sum.definition}, ${sum.fromDate}~${sum.toDate})`, 10);
++
++    for (const channel of report.channels) {
++      ensure(36);
++      y += 8;
++      text(channel.label, 14);
++      text(`${channel.status.label}${channel.account && channel.account.displayName ? " · " + channel.account.displayName : ""}`, 10);
++      text(channel.posts.reason, 9, "#444444");
++      if (!channel.metrics.length) {
++        text("표시할 조회 지표 정의가 없습니다.", 10);
++        continue;
++      }
++      for (const metric of channel.metrics) {
++        text(`${metric.label} (${metric.unit}) ${metric.definition}`, 9, "#333333");
++        if (metric.asOf) text(`기준 ${metric.asOf.date} 값 ${metric.asOf.value} · ${metric.asOf.state}`, 10);
++        else text("이 기간의 기준 숫자가 없습니다.", 10);
++        if (metric.kind === "period_occurring") {
++          text(metric.periodOccurring.eligible ? metric.periodOccurring.label : metric.periodOccurring.reason, 10);
++        } else if (metric.observedSpan.eligible) {
++          text(`관측 구간 차이 ${metric.observedSpan.difference} (${metric.observedSpan.label}, ${metric.observedSpan.spanDays}일 간격). 빠진 날을 잇지 않습니다.`, 10);
++        } else {
++          text(metric.observedSpan.reason, 10);
++        }
++        text(metric.windowBoundaryDelta.eligible ? `기간 경계 차이 ${metric.windowBoundaryDelta.label}` : metric.windowBoundaryDelta.reason, 10);
++        text(metric.comparison.eligible ? `이전 주 ${metric.comparison.text}` : metric.comparison.text, 10);
++        const shown = metric.cells.filter((cell) => cell.state !== "absent").slice(0, 12);
++        if (!shown.length) text("표에 넣을 수집 행이 없습니다.", 9, "#444444");
++        for (const cell of shown) {
++          text(`${cell.date} ${cell.state} ${cell.value == null ? "값 없음" : cell.value}${cell.reason ? " " + cell.reason : ""}`, 8, "#333333");
++        }
++        if (metric.series.length) {
++          ensure(70);
++          drawSeries(doc, metric.series, left, y, width, 56);
++          y += 64;
++        }
++      }
++    }
++    doc.end();
++  });
++}
++
++function drawSeries(doc, points, x, y, width, height) {
++  const values = points.map((point) => point.value);
++  const min = Math.min(...values);
++  const max = Math.max(...values);
++  const span = max - min || 1;
++  doc.save();
++  doc.rect(x, y, width, height).strokeColor("#dddddd").stroke();
++  const t0 = Date.parse(points[0].date + "T00:00:00Z");
++  const t1 = Date.parse(points[points.length - 1].date + "T00:00:00Z");
++  const spanT = Math.max(1, t1 - t0);
++  let prev = null;
++  for (let i = 0; i < points.length; i++) {
++    const fraction = points.length === 1 ? 0.5 : (Date.parse(points[i].date + "T00:00:00Z") - t0) / spanT;
++    const px = x + 4 + fraction * (width - 8);
++    const py = y + height - 6 - ((points[i].value - min) / span) * (height - 12);
++    doc.circle(px, py, 2).fillColor("#355c8c").fill();
++    if (prev && !points[i].gapBefore) {
++      doc.moveTo(prev.x, prev.y).lineTo(px, py).strokeColor("#355c8c").stroke();
++    }
++    prev = { x: px, y: py };
++  }
++  doc.restore();
++}
++
++module.exports = { renderWeeklyReportPdf, fontAvailable, FONT };
+--- a/lib/weekly-report.js
++++ b/lib/weekly-report.js
+@@ -0,0 +1,432 @@
++/**
++ * Store weekly report from existing snapshots and publish jobs.
++ * Does not call providers and does not write snapshot files.
++ */
++const fs = require("fs");
++const path = require("path");
++
++const SNAP_PATH = path.join(__dirname, "..", "data", "insight-snapshots.json");
++const DAY = 24 * 60 * 60 * 1000;
++const DISCLAIMER = "확인 가능한 채널 데이터를 기준으로 작성했습니다. 미수집 항목은 0으로 계산하지 않았습니다.";
++const WINDOW_DAYS = new Set([7, 14, 28]);
++
++const PLATFORMS = [
++  { id: "youtube", label: "YouTube", collector: true, cumulativeViews: "youtube_channel_view_count" },
++  { id: "tiktok", label: "TikTok", collector: true, cumulativeViews: "tiktok_listed_video_view_sum" },
++  { id: "instagram", label: "Instagram", collector: true, cumulativeViews: null },
++  { id: "threads", label: "Threads", collector: true, cumulativeViews: null },
++  { id: "facebook", label: "Facebook", collector: false, cumulativeViews: null },
++  { id: "x", label: "X", collector: false, cumulativeViews: null },
++  { id: "blogger", label: "Blogger", collector: false, cumulativeViews: null },
++  { id: "naver-blog", label: "네이버 블로그", collector: false, cumulativeViews: null },
++  { id: "naver-clip", label: "네이버 클립", collector: false, cumulativeViews: null },
++  { id: "youtube-community", label: "유튜브 커뮤니티", collector: false, cumulativeViews: null },
++];
++
++const METRICS = {
++  youtube: [
++    { key: "views", label: "누적 조회수", unit: "회", kind: "cumulative", definition: "channels.list statistics.viewCount. 기간 발생 조회수가 아닙니다.", comparable: "youtube_channel_view_count" },
++    { key: "followers", label: "누적 구독자", unit: "명", kind: "cumulative", definition: "statistics.subscriberCount. 기준 시각의 누적값입니다.", comparable: null },
++    { key: "videos", label: "누적 동영상 수", unit: "개", kind: "cumulative", definition: "statistics.videoCount.", comparable: null },
++  ],
++  tiktok: [
++    { key: "views", label: "영상 조회수 합계", unit: "회", kind: "cumulative", definition: "수집 시각에 video.list view_count 를 더한 값입니다. 채널 누적 조회수와 같은 정의가 아닙니다.", comparable: "tiktok_listed_video_view_sum" },
++    { key: "followers", label: "누적 팔로워", unit: "명", kind: "cumulative", definition: "user.info follower_count. 기준 시각의 누적값입니다.", comparable: null },
++    { key: "likes", label: "누적 좋아요", unit: "개", kind: "cumulative", definition: "user.info likes_count.", comparable: null },
++    { key: "videos", label: "누적 동영상 수", unit: "개", kind: "cumulative", definition: "user.info video_count 또는 목록으로 센 개수입니다.", comparable: null },
++  ],
++  instagram: [
++    { key: "dayViews", label: "하루 조회", unit: "회", kind: "period_occurring", definition: "insights views, period day. 그 날짜에 값이 있을 때만 하루 발생 조회입니다.", comparable: null },
++    { key: "followers", label: "누적 팔로워", unit: "명", kind: "cumulative", definition: "graph /me followers_count. 기준 시각의 누적값입니다.", comparable: null },
++    { key: "videos", label: "미디어 수", unit: "개", kind: "cumulative", definition: "graph /me media_count.", comparable: null },
++  ],
++  threads: [
++    { key: "dayViews", label: "하루 조회", unit: "회", kind: "period_occurring", definition: "threads_insights views. 그 날짜에 값이 있을 때만 사용합니다.", comparable: null },
++    { key: "followers", label: "누적 팔로워", unit: "명", kind: "cumulative", definition: "threads_insights followers_count. 기준 시각의 누적값입니다.", comparable: null },
++  ],
++};
++
++function addDays(dateStr, n) {
++  return new Date(Date.parse(dateStr + "T00:00:00Z") + n * DAY).toISOString().slice(0, 10);
++}
++
++function kstDate(ms = Date.now()) {
++  return new Date(ms + 9 * 3600 * 1000).toISOString().slice(0, 10);
++}
++
++function isDate(value) {
++  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(value + "T00:00:00Z"));
++}
++
++function enumerate(start, end) {
++  const out = [];
++  for (let d = start; d <= end; d = addDays(d, 1)) out.push(d);
++  return out;
++}
++
++function finiteNumber(value) {
++  return typeof value === "number" && Number.isFinite(value) ? value : null;
++}
++
++function readSnapshotFile(filePath = SNAP_PATH) {
++  try {
++    const data = JSON.parse(fs.readFileSync(filePath, "utf8"));
++    if (!data || typeof data !== "object" || !data.days || typeof data.days !== "object") {
++      return { version: 1, days: {}, lastRunAt: null };
++    }
++    return data;
++  } catch {
++    return { version: 1, days: {}, lastRunAt: null };
++  }
++}
++
++function resolveWindow({ end, days, now }) {
++  const length = WINDOW_DAYS.has(Number(days)) ? Number(days) : 7;
++  const endDate = isDate(end) ? end : kstDate(now ? Date.parse(now) : Date.now());
++  const start = addDays(endDate, -(length - 1));
++  const dates = enumerate(start, endDate);
++  const priorEnd = addDays(start, -1);
++  const priorStart = addDays(priorEnd, -(length - 1));
++  return { days: length, start, end: endDate, dates, priorStart, priorEnd, priorDates: enumerate(priorStart, priorEnd), timeZone: "Asia/Seoul" };
++}
++
++function snapKey(email, clientId, platform) {
++  return `${String(email || "").toLowerCase()}|${clientId}|${platform}`;
++}
++
++function rowFor(snapshots, email, clientId, platform, date) {
++  const day = snapshots && snapshots.days && snapshots.days[date];
++  if (!day) return null;
++  const row = day[snapKey(email, clientId, platform)];
++  if (!row) return null;
++  if (row.email && row.email !== String(email).toLowerCase()) return null;
++  if (row.clientId && row.clientId !== clientId) return null;
++  return row;
++}
++
++function ambiguousYoutubeZero(metricKey, row, value) {
++  if (value !== 0) return false;
++  if (!row || row.zeroConfirmed === true) return false;
++  if (row.zeroConfirmed && row.zeroConfirmed[metricKey] === true) return false;
++  return metricKey === "views" || metricKey === "followers" || metricKey === "videos";
++}
++
++function pointState(platformId, metric, row) {
++  if (!row || row.error) return { state: "absent", value: null };
++  if (!Object.prototype.hasOwnProperty.call(row, metric.key) || row[metric.key] == null) {
++    const missing = new Set(row.missingScope || []);
++    if (missing.size) return { state: "permission_needed", value: null, reason: Array.from(missing).join(", ") };
++    if (Object.prototype.hasOwnProperty.call(row, metric.key)) return { state: "unavailable", value: null };
++    return { state: "absent", value: null };
++  }
++  const value = finiteNumber(row[metric.key]);
++  if (value == null) return { state: "unknown", value: null, reason: "숫자 값이 아닙니다" };
++  if (platformId === "youtube" && ambiguousYoutubeZero(metric.key, row, value)) {
++    return {
++      state: "ambiguous_zero",
++      value: 0,
++      reason: "0으로 저장되어 있습니다. 2026-11-06 00:21 KST 이전 수집기는 빠진 YouTube 통계를 0으로 넣었습니다. 실제 0이라고 단정하지 않습니다.",
++    };
++  }
++  if (value === 0) return { state: "actual_zero", value: 0 };
++  return { state: "available", value };
++}
++
++function seriesFor(snapshots, email, clientId, platform, metric, dates) {
++  const points = [];
++  const cells = [];
++  for (const date of dates) {
++    const row = rowFor(snapshots, email, clientId, platform.id, date);
++    if (!row) {
++      cells.push({ date, state: "absent", value: null });
++      continue;
++    }
++    if (row.error && finiteNumber(row[metric.key]) == null) {
++      cells.push({ date, state: "collection_error", value: null, reason: String(row.error) });
++      continue;
++    }
++    const point = pointState(platform.id, metric, row);
++    cells.push({ date, ...point, at: row.at || null });
++    if (point.state === "available" || point.state === "actual_zero") {
++      const prev = points[points.length - 1];
++      points.push({ date, value: point.value, gapBefore: prev ? addDays(prev.date, 1) !== date : false });
++    }
++  }
++  return { points, cells };
++}
++
++function observedSpan(points) {
++  if (points.length < 2) {
++    return { eligible: false, reason: "숫자 수집점이 2개 미만입니다." };
++  }
++  const first = points[0];
++  const last = points[points.length - 1];
++  const spanDays = enumerate(first.date, last.date).length - 1;
++  return {
++    eligible: true,
++    fromDate: first.date,
++    toDate: last.date,
++    fromValue: first.value,
++    toValue: last.value,
++    difference: last.value - first.value,
++    spanDays,
++    label: `${first.date} ${first.value} -> ${last.date} ${last.value}`,
++  };
++}
++
++function boundaryDelta(points, start, end) {
++  const a = points.find((point) => point.date === start);
++  const b = points.find((point) => point.date === end);
++  if (!a || !b) {
++    return { eligible: false, reason: "기간의 시작일 또는 종료일에 숫자 수집점이 없습니다. 없는 날을 0으로 두지 않습니다." };
++  }
++  return {
++    eligible: true,
++    fromDate: start,
++    toDate: end,
++    fromValue: a.value,
++    toValue: b.value,
++    difference: b.value - a.value,
++    label: `${start} ${a.value} -> ${end} ${b.value}`,
++  };
++}
++
++function comparisonText(prior, current) {
++  if (!prior || !prior.eligible || !current || !current.eligible) {
++    return { eligible: false, text: "같은 정의의 이전 기간 비교는 없습니다.", prior: null, current: current && current.eligible ? current : null };
++  }
++  if (prior.difference === 0) {
++    return { eligible: true, text: `0 -> ${current.difference}`, prior, current, percent: null };
++  }
++  return {
++    eligible: true,
++    text: `${prior.difference} -> ${current.difference}`,
++    prior,
++    current,
++    percent: null,
++  };
++}
++
++function periodOccurring(cells, dates) {
++  const observed = cells.filter((cell) => cell.state === "available" || cell.state === "actual_zero");
++  if (!observed.length) return { eligible: false, reason: "기간 안에 하루 조회 숫자가 없습니다.", observedDays: 0, windowDays: dates.length };
++  const sum = observed.reduce((total, cell) => total + cell.value, 0);
++  return {
++    eligible: true,
++    complete: observed.length === dates.length,
++    sum,
++    observedDays: observed.length,
++    windowDays: dates.length,
++    missingDays: dates.length - observed.length,
++    label: observed.length === dates.length
++      ? `기간 발생 조회 합 ${sum}`
++      : `관측 ${observed.length}일 합 ${sum}. 빠진 ${dates.length - observed.length}일은 합계에 넣지 않았습니다.`,
++  };
++}
++
++function latestCollectedAt(snapshots, email, clientId) {
++  let latest = null;
++  const days = (snapshots && snapshots.days) || {};
++  for (const date of Object.keys(days)) {
++    for (const platform of PLATFORMS) {
++      const row = rowFor(snapshots, email, clientId, platform.id, date);
++      if (!row || !row.at) continue;
++      if (!latest || row.at > latest) latest = row.at;
++    }
++  }
++  return latest || (snapshots && snapshots.lastRunAt) || null;
++}
++
++function accountOf(conn) {
++  if (!conn || !conn.account) return null;
++  return { displayName: conn.account.displayName || null, id: conn.account.id || null };
++}
++
++function channelStatus(platform, conn) {
++  if (!platform.collector) return { code: "unsupported", label: "조회 스냅샷 대상 아님" };
++  if (!conn || (!conn.hasToken && !(conn.account && (conn.account.displayName || conn.account.id)))) {
++    return { code: "unconnected", label: "연결 안 됨" };
++  }
++  if (conn.hasToken && conn.account) return { code: "connected", label: "연결됨" };
++  if (!conn.hasToken) return { code: "unconnected", label: "연결 안 됨" };
++  return { code: "unknown", label: "계정 식별자 없음" };
++}
++
++function metricReport(platform, metric, snapshots, email, clientId, window) {
++  const currentSeries = seriesFor(snapshots, email, clientId, platform, metric, window.dates);
++  const priorSeries = seriesFor(snapshots, email, clientId, platform, metric, window.priorDates);
++  const span = observedSpan(currentSeries.points);
++  const boundary = boundaryDelta(currentSeries.points, window.start, window.end);
++  const priorBoundary = boundaryDelta(priorSeries.points, window.priorStart, window.priorEnd);
++  const compare = window.days === 7 && metric.kind === "cumulative"
++    ? comparisonText(priorBoundary, boundary)
++    : { eligible: false, text: "이전 주 비교는 7일 기간에서, 양쪽 기간의 시작일과 종료일에 같은 정의의 숫자가 있을 때만 계산합니다.", percent: null };
++  const occurring = metric.kind === "period_occurring" ? periodOccurring(currentSeries.cells, window.dates) : null;
++  const latestCell = [...currentSeries.cells].reverse().find((cell) => cell.state === "available" || cell.state === "actual_zero" || cell.state === "ambiguous_zero");
++  return {
++    key: metric.key,
++    label: metric.label,
++    unit: metric.unit,
++    kind: metric.kind,
++    definition: metric.definition,
++    comparable: metric.comparable,
++    asOf: latestCell ? { date: latestCell.date, value: latestCell.value, state: latestCell.state, at: latestCell.at || null } : null,
++    series: currentSeries.points,
++    cells: currentSeries.cells,
++    observedSpan: span,
++    windowBoundaryDelta: boundary,
++    priorWeek: priorBoundary,
++    comparison: compare,
++    periodOccurring: occurring,
++  };
++}
++
++function viewSum(channels) {
++  const groups = new Map();
++  for (const channel of channels) {
++    for (const metric of channel.metrics) {
++      if (!metric.comparable || !metric.windowBoundaryDelta.eligible) continue;
++      if (!groups.has(metric.comparable)) groups.set(metric.comparable, []);
++      groups.get(metric.comparable).push({ channel: channel.label, difference: metric.windowBoundaryDelta.difference, fromDate: metric.windowBoundaryDelta.fromDate, toDate: metric.windowBoundaryDelta.toDate });
++    }
++  }
++  const sums = [];
++  for (const [definition, items] of groups) {
++    if (items.length < 2) continue;
++    const sameWindow = items.every((item) => item.fromDate === items[0].fromDate && item.toDate === items[0].toDate);
++    if (!sameWindow) continue;
++    sums.push({
++      label: "조회 합계(중복 포함)",
++      definition,
++      fromDate: items[0].fromDate,
++      toDate: items[0].toDate,
++      channels: items.map((item) => item.channel),
++      value: items.reduce((total, item) => total + item.difference, 0),
++    });
++  }
++  return sums;
++}
++
++function publishingReport(jobs, email, clientId, window) {
++  const want = String(email || "").toLowerCase();
++  const mine = (jobs || []).filter((job) => {
++    if (!job || job.clientId !== clientId) return false;
++    if (job.userEmail && String(job.userEmail).toLowerCase() !== want) return false;
++    const created = job.createdAt ? kstDate(Date.parse(job.createdAt)) : null;
++    return created && created >= window.start && created <= window.end;
++  });
++  const tasks = mine.flatMap((job) => job.tasks || []);
++  const singleVideoJobs = mine.filter((job) => job.mediaType === "video" && Array.isArray(job.files) && job.files.length === 1).length;
++  return {
++    uploadJobs: mine.length,
++    channelPublishTasks: tasks.length,
++    singleVideoUploads: singleVideoJobs,
++    identity: "파일 바이트가 같은지 확인할 식별자는 없습니다. 서로 다른 발행 작업은 하나로 합치지 않습니다. 동영상 파일 1개인 발행 작업 수와 채널 작업 수를 따로 보여 줍니다.",
++  };
++}
++
++function suggestions(report) {
++  const lines = [];
++  if (!report.coverage.observedDates.length) {
++    lines.push("이 기간에 이 가게의 수집점이 없습니다.");
++  } else if (!report.coverage.sevenDayDeltaEligible) {
++    lines.push(`선택 기간 ${report.period.days}일 중 수집이 있는 날은 ${report.coverage.observedDates.length}일입니다. 7일 델타와 이전 주 비교는 만들 수 없습니다.`);
++  }
++  const spans = [];
++  for (const channel of report.channels) {
++    for (const metric of channel.metrics) {
++      if (metric.kind === "cumulative" && metric.key === "views" && metric.observedSpan.eligible) {
++        spans.push(`${channel.label} 누적 조회수 ${metric.observedSpan.label} (${metric.observedSpan.spanDays}일 간격)`);
++      }
++    }
++  }
++  if (spans.length) lines.push(`관측된 수집점 차이만 계산했습니다. ${spans.join(". ")}.`);
++  const ambiguous = report.channels.some((channel) => channel.metrics.some((metric) => metric.cells.some((cell) => cell.state === "ambiguous_zero")));
++  if (ambiguous) lines.push("YouTube에 0으로 저장된 값은 실제 0으로 단정하지 않았습니다.");
++  if (!lines.length) lines.push("표시한 숫자는 이 가게의 스냅샷과 발행 기록에 있는 값입니다.");
++  return lines;
++}
++
++function buildWeeklyReport({ email, client, snapshots, connections, jobs, end, days, now, generatedAt, fixtureBanner }) {
++  if (!email) throw new Error("email is required");
++  if (!client || !client.id) throw new Error("client is required");
++  const window = resolveWindow({ end, days, now });
++  const snaps = snapshots || { version: 1, days: {} };
++  const conns = connections || {};
++  const observedDates = window.dates.filter((date) => PLATFORMS.some((platform) => rowFor(snaps, email, client.id, platform.id, date)));
++  const channels = PLATFORMS.map((platform) => {
++    const metrics = (METRICS[platform.id] || []).map((metric) => metricReport(platform, metric, snaps, email, client.id, window));
++    const status = channelStatus(platform, conns[platform.id]);
++    const errors = metrics.flatMap((metric) => metric.cells.filter((cell) => cell.state === "collection_error").map((cell) => cell.date));
++    if (status.code === "connected" && !metrics.some((metric) => metric.series.length) && !errors.length) {
++      status.detail = "연결 기록은 있으나 이 기간의 숫자 수집점이 없습니다.";
++    }
++    return {
++      platform: platform.id,
++      label: platform.label,
++      collector: platform.collector,
++      status,
++      account: accountOf(conns[platform.id]),
++      metrics,
++      posts: { available: false, reason: "게시물별 조회수는 저장되어 있지 않습니다. 막대그래프를 그리지 않습니다." },
++    };
++  });
++  const sevenDayDeltaEligible = window.days === 7 && channels.some((channel) => channel.metrics.some((metric) => metric.windowBoundaryDelta.eligible));
++  const priorWeekEligible = channels.some((channel) => channel.metrics.some((metric) => metric.comparison.eligible));
++  const report = {
++    storeId: client.id,
++    storeName: client.name || client.id,
++    email: String(email).toLowerCase(),
++    generatedAt: generatedAt || new Date().toISOString(),
++    timeZone: "Asia/Seoul",
++    disclaimer: DISCLAIMER,
++    fixtureBanner: fixtureBanner || null,
++    period: { start: window.start, end: window.end, days: window.days, priorStart: window.priorStart, priorEnd: window.priorEnd },
++    lastCollectedAt: latestCollectedAt(snaps, email, client.id),
++    coverage: {
++      windowDays: window.dates.length,
++      observedDates,
++      missingDates: window.dates.filter((date) => !observedDates.includes(date)),
++      sevenDayDeltaEligible,
++      priorWeekEligible,
++    },
++    publishing: publishingReport(jobs, email, client.id, window),
++    viewSums: viewSum(channels),
++    channels,
++  };
++  report.suggestions = suggestions(report);
++  return report;
++}
++
++function weeklyReportHttpResult({ sessionEmail, storeId, getClient, query, build }) {
++  if (!sessionEmail) return { status: 401, body: { error: "로그인이 필요합니다." } };
++  const client = getClient(sessionEmail, storeId);
++  if (!client) return { status: 404, body: { error: "가게를 찾을 수 없습니다." } };
++  const days = query && query.days != null ? Number(query.days) : 7;
++  if (query && query.days != null && !WINDOW_DAYS.has(days)) {
++    return { status: 400, body: { error: "기간은 7, 14, 28일만 선택할 수 있습니다." } };
++  }
++  if (query && query.end && !isDate(String(query.end))) {
++    return { status: 400, body: { error: "종료일은 YYYY-MM-DD 형식이어야 합니다." } };
++  }
++  return {
++    status: 200,
++    body: build({
++      email: sessionEmail,
++      client,
++      end: query && query.end ? String(query.end) : undefined,
++      days,
++    }),
++  };
++}
++
++module.exports = {
++  DISCLAIMER,
++  PLATFORMS,
++  buildWeeklyReport,
++  weeklyReportHttpResult,
++  resolveWindow,
++  readSnapshotFile,
++  addDays,
++  kstDate,
++};
+--- a/package.json
++++ b/package.json
+@@ -12,6 +12,8 @@
+   "dependencies": {
+     "dotenv": "^17.4.2",
+     "express": "^4.21.2",
+-    "multer": "^1.4.5-lts.1"
++    "multer": "^1.4.5-lts.1",
++    "pdfkit": "^0.15.2",
++    "pdfkit": "^0.15.2"
+   }
+ }
+--- a/public/app.js
++++ b/public/app.js
+@@ -38,6 +38,7 @@
+     "/naver": "view-naver",
+     "/insights": "view-insights",
+     "/analysis": "view-analysis",
++    "/report": "view-report",
+     "/trends": "view-trends",
+     "/mania": "view-mania",
+     "/billing": "view-billing",
+@@ -661,6 +662,8 @@
+     document.getElementById("view-insights").classList.toggle("hidden", p !== "/insights");
+     const viewAnalysis = document.getElementById("view-analysis");
+     if (viewAnalysis) viewAnalysis.classList.toggle("hidden", p !== "/analysis");
++    const viewReport = document.getElementById("view-report");
++    if (viewReport) viewReport.classList.toggle("hidden", p !== "/report");
+     const viewTrends = document.getElementById("view-trends");
+     if (viewTrends) viewTrends.classList.toggle("hidden", p !== "/trends");
+     const viewMania = document.getElementById("view-mania");
+@@ -809,6 +812,8 @@
+       if (omnibox) omnibox.textContent = "인사이트";
+     } else if (p === "/analysis") {
+       if (omnibox) omnibox.textContent = "채널 분석";
++    } else if (p === "/report") {
++      if (omnibox) omnibox.textContent = "주간 리포트";
+     } else if (p === "/trends") {
+       if (omnibox) omnibox.textContent = "트렌드";
+     } else if (p === "/mania") {
+@@ -831,6 +836,7 @@
+     if (p === "/naver") loadNaver();
+     if (p === "/insights") renderInsights();
+     if (p === "/analysis") renderChannelAnalysis();
++    if (p === "/report") renderWeeklyReport();
+     if (p === "/trends") loadTrends();
+     if (p === "/mania") loadMania();
+     if (p === "/billing") loadBillingPage();
+@@ -2701,6 +2707,7 @@
+     renderSnsPreview();
+     loadLatestUploadLinks();
+     if (pathOf() === "/analysis") renderChannelAnalysis();
++    if (pathOf() === "/report") renderWeeklyReport();
+   }
+ 
+   function sidebarMsg(text, ok) {
+@@ -4582,6 +4589,116 @@
+     }
+   }
+ 
++  let reportDays = 7;
++  let reportSeq = 0;
++
++  function reportSvg(points) {
++    if (!points || !points.length) return "<p class='ic-note'>그릴 숫자 점이 없습니다.</p>";
++    const w = 640;
++    const h = 140;
++    const vals = points.map((p) => p.value);
++    const min = Math.min.apply(null, vals);
++    const max = Math.max.apply(null, vals);
++    const span = max - min || 1;
++    const t0 = Date.parse(points[0].date + "T00:00:00Z");
++    const t1 = Date.parse(points[points.length - 1].date + "T00:00:00Z");
++    const spanT = Math.max(1, t1 - t0);
++    const xs = points.map((p) => (points.length === 1 ? w / 2 : 16 + ((Date.parse(p.date + "T00:00:00Z") - t0) / spanT) * (w - 32)));
++    const ys = points.map((p) => h - 16 - ((p.value - min) / span) * (h - 32));
++    let d = "";
++    points.forEach((p, i) => {
++      d += (i === 0 || p.gapBefore ? " M " : " L ") + xs[i].toFixed(1) + " " + ys[i].toFixed(1);
++    });
++    const dots = points
++      .map((p, i) => `<circle cx="${xs[i].toFixed(1)}" cy="${ys[i].toFixed(1)}" r="3" fill="#355c8c"><title>${esc(p.date)} ${esc(p.value)}</title></circle>`)
++      .join("");
++    return `<svg class="report-svg" viewBox="0 0 ${w} ${h}" role="img"><path d="${d}" fill="none" stroke="#355c8c" stroke-width="2"/>${dots}</svg>`;
++  }
++
++  function renderWeeklyReportView(data) {
++    const banner = data.fixtureBanner ? `<div class="report-banner">${esc(data.fixtureBanner)}</div>` : "";
++    const coverage = `수집 있는 날 ${data.coverage.observedDates.length}일 (${(data.coverage.observedDates || []).join(", ") || "없음"}). 없는 날 ${(data.coverage.missingDates || []).length}일. ${data.coverage.sevenDayDeltaEligible ? "7일 경계 비교가 있습니다." : "7일 델타와 이전 주 비교는 없습니다."}`;
++    const sums = (data.viewSums || []).map((sum) => `<p>${esc(sum.label)} ${esc(sum.value)} (${esc(sum.definition)})</p>`).join("") || "<p class='ic-note'>같은 정의의 조회 합계는 없습니다.</p>";
++    const suggestions = (data.suggestions || []).map((line) => `<li>${esc(line)}</li>`).join("");
++    const channels = (data.channels || []).map((ch) => {
++      const metrics = (ch.metrics || []).map((metric) => {
++        const asOf = metric.asOf ? `${esc(metric.asOf.date)} ${esc(metric.asOf.value)} (${esc(metric.asOf.state)})` : "기준 숫자 없음";
++        const span = metric.observedSpan && metric.observedSpan.eligible
++          ? `관측 차이 ${esc(metric.observedSpan.difference)} · ${esc(metric.observedSpan.label)} · ${esc(metric.observedSpan.spanDays)}일 간격`
++          : esc(metric.observedSpan ? metric.observedSpan.reason : "");
++        const boundary = metric.windowBoundaryDelta && metric.windowBoundaryDelta.eligible
++          ? esc(metric.windowBoundaryDelta.label)
++          : esc(metric.windowBoundaryDelta ? metric.windowBoundaryDelta.reason : "");
++        const occurring = metric.periodOccurring
++          ? esc(metric.periodOccurring.eligible ? metric.periodOccurring.label : metric.periodOccurring.reason)
++          : "";
++        return `<div class="ic-note"><b>${esc(metric.label)}</b> ${esc(metric.definition || "")}</div>
++          <div class="ic-row"><span>기준 시각 누적/값</span><span>${asOf}</span></div>
++          <div class="ic-note">${span}</div>
++          <div class="ic-note">${boundary}</div>
++          <div class="ic-note">${occurring}</div>
++          <div class="ic-note">${esc(metric.comparison ? metric.comparison.text : "")}</div>
++          ${reportSvg(metric.series)}`;
++      }).join("");
++      return `<article class="insight-card" id="report-${esc(ch.platform)}">
++        <div class="ic-head"><span class="ic-name">${esc(ch.label)}</span><span>${esc(ch.status ? ch.status.label : "")}</span></div>
++        <div class="ic-row"><span>계정</span><span>${esc(ch.account && ch.account.displayName ? ch.account.displayName : "계정 정보 없음")}</span></div>
++        <p class="ic-note">${esc(ch.posts ? ch.posts.reason : "")}</p>
++        ${metrics || "<p class='ic-note'>조회 지표 정의가 없습니다.</p>"}
++      </article>`;
++    }).join("");
++    return `${banner}
++      <p><b>${esc(data.storeName)}</b> · ${esc(data.period.start)} ~ ${esc(data.period.end)} (Asia/Seoul)</p>
++      <p class="ic-note">마지막 수집 ${esc(data.lastCollectedAt || "없음")} · 화면 생성 ${esc(data.generatedAt || "")}</p>
++      <p>${esc(data.disclaimer || "")}</p>
++      <p>${esc(coverage)}</p>
++      <p>발행 작업 ${esc(data.publishing.uploadJobs)}건, 채널 작업 ${esc(data.publishing.channelPublishTasks)}건, 동영상 파일 1개 작업 ${esc(data.publishing.singleVideoUploads)}건</p>
++      <p class="ic-note">${esc(data.publishing.identity)}</p>
++      ${sums}
++      <ul>${suggestions}</ul>
++      <div class="analysis-list">${channels}</div>`;
++  }
++
++  async function renderWeeklyReport() {
++    const seq = ++reportSeq;
++    const status = document.getElementById("report-status");
++    const body = document.getElementById("report-body");
++    const pdf = document.getElementById("report-pdf");
++    if (!body) return;
++    const client = getActiveClient();
++    if (!client) {
++      if (status) status.textContent = "가게를 선택하세요.";
++      body.innerHTML = "";
++      return;
++    }
++    const end = (document.getElementById("report-end") || {}).value || "";
++    const q = new URLSearchParams({ days: String(reportDays) });
++    if (end) q.set("end", end);
++    if (pdf) pdf.href = "/api/stores/" + encodeURIComponent(client.id) + "/weekly-report.pdf?" + q.toString();
++    if (status) status.textContent = "불러오는 중…";
++    try {
++      const res = await fetch("/api/stores/" + encodeURIComponent(client.id) + "/weekly-report?" + q.toString());
++      const data = await res.json().catch(() => ({}));
++      if (seq !== reportSeq) return;
++      if (!res.ok) throw new Error(data.error || "불러오지 못했습니다.");
++      if (status) status.textContent = client.name;
++      body.innerHTML = renderWeeklyReportView(data);
++    } catch (err) {
++      if (seq !== reportSeq) return;
++      if (status) status.textContent = (err && err.message) || "불러오지 못했습니다.";
++    }
++  }
++
++  document.querySelectorAll("[data-report-days]").forEach((btn) => {
++    btn.addEventListener("click", () => {
++      reportDays = Number(btn.getAttribute("data-report-days")) || 7;
++      document.querySelectorAll("[data-report-days]").forEach((el) => el.classList.toggle("active", el === btn));
++      renderWeeklyReport();
++    });
++  });
++  const reportEnd = document.getElementById("report-end");
++  if (reportEnd) reportEnd.addEventListener("change", renderWeeklyReport);
++
+   /* ---------- 트렌드 (관리자 미리보기) ---------- */
+   let trendsData = null;
+   let trendsCat = "all";
+--- a/public/index.html
++++ b/public/index.html
+@@ -125,6 +125,7 @@
+         <a href="/scheduled" data-nav="/scheduled">예약</a>
+         <a href="/insights" data-nav="/insights">조회수</a>
+         <a href="/analysis" data-nav="/analysis">채널 분석</a>
++        <a href="/report" data-nav="/report">주간 리포트</a>
+         <a href="/trends" data-nav="/trends" id="trends-nav-link" hidden>트렌드</a>
+         <a href="/mania" data-nav="/mania" id="mania-nav-link" hidden>매니아 취향</a>
+         <a href="/billing" data-nav="/billing">요금</a>
+@@ -769,6 +770,22 @@
+         <p class="sub">왼쪽에서 고른 가게에 연결된 채널만 보여 줍니다. 숫자는 인사이트 스냅샷에 있는 값만 쓰고, 없는 값은 0으로 바꾸지 않습니다.</p>
+         <p class="hint" id="analysis-status"></p>
+         <div id="analysis-body"></div>
++      </section>
++
++      <section id="view-report" class="hidden">
++        <h2>주간 리포트</h2>
++        <p class="sub">선택한 가게의 수집 스냅샷만 사용합니다. 없는 날은 0이 아니고, 선은 이어지지 않습니다.</p>
++        <div class="report-toolbar">
++          <label>종료일 <input type="date" id="report-end" /></label>
++          <div class="report-days" role="group" aria-label="기간">
++            <button type="button" class="period-btn" data-report-days="7">7일</button>
++            <button type="button" class="period-btn" data-report-days="14">14일</button>
++            <button type="button" class="period-btn" data-report-days="28">28일</button>
++          </div>
++          <a class="btn ghost" id="report-pdf" href="#">PDF 받기</a>
++        </div>
++        <p class="hint" id="report-status"></p>
++        <div id="report-body"></div>
+       </section>
+ 
+       <section id="view-mania" class="hidden">
+--- a/public/styles.css
++++ b/public/styles.css
+@@ -2420,6 +2420,10 @@
+ .insights-store-nums span { display: block; font-size: 12px; color: var(--muted); }
+ .insights-store-nums b { font-size: 18px; }
+ .analysis-list { display: flex; flex-direction: column; gap: 12px; }
++.report-toolbar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 12px; }
++.report-toolbar input[type="date"] { width: auto; }
++.report-banner { border: 1px solid #ead9b0; background: #fff8e8; padding: 10px 12px; margin-bottom: 12px; font-size: 13px; }
++.report-svg { width: 100%; height: 140px; background: #fff; border: 1px solid var(--line); }
+ .analysis-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+ .analysis-table th, .analysis-table td { text-align: left; padding: 6px 4px; border-bottom: 1px solid var(--line); vertical-align: top; }
+ .analysis-table th { color: var(--muted); font-size: 12px; font-weight: 600; }
+--- a/server.js
++++ b/server.js
+@@ -3596,7 +3596,6 @@
+   }
+ });
+ 
+-
+ // ---- 트렌드 (관리자 미리보기) ----
+ const trends = require("./lib/trends");
+ app.get("/api/trends", (req, res) => {
+@@ -3616,6 +3615,52 @@
+     res.json({ ok: true, result });
+   } catch (err) {
+     res.status(500).json({ error: "새로 불러오지 못했습니다." });
++  }
++});
++
++const weeklyReport = require("./lib/weekly-report");
++const weeklyPdf = require("./lib/weekly-report-pdf");
++
++function buildWeeklyForSession(sessionEmail, client, query) {
++  return weeklyReport.buildWeeklyReport({
++    email: sessionEmail,
++    client,
++    end: query && query.end,
++    days: query && query.days,
++    snapshots: weeklyReport.readSnapshotFile(),
++    connections: channelAnalysis.readConnections(sessionEmail, client.id),
++    jobs: store.getJobs(),
++  });
++}
++
++app.get("/api/stores/:storeId/weekly-report", (req, res) => {
++  const result = weeklyReport.weeklyReportHttpResult({
++    sessionEmail: req.user && req.user.email,
++    storeId: String(req.params.storeId || ""),
++    getClient: clientStore.getClient,
++    query: req.query,
++    build: ({ email, client, end, days }) => buildWeeklyForSession(email, client, { end, days }),
++  });
++  res.status(result.status).json(result.body);
++});
++
++app.get("/api/stores/:storeId/weekly-report.pdf", async (req, res) => {
++  const result = weeklyReport.weeklyReportHttpResult({
++    sessionEmail: req.user && req.user.email,
++    storeId: String(req.params.storeId || ""),
++    getClient: clientStore.getClient,
++    query: req.query,
++    build: ({ email, client, end, days }) => buildWeeklyForSession(email, client, { end, days }),
++  });
++  if (result.status !== 200) return res.status(result.status).json(result.body);
++  try {
++    const pdf = await weeklyPdf.renderWeeklyReportPdf(result.body);
++    res.setHeader("Content-Type", "application/pdf");
++    res.setHeader("Content-Disposition", "attachment; filename=\"onepost-weekly-report.pdf\"");
++    res.send(pdf);
++  } catch (err) {
++    const status = err && err.code === "FONT_MISSING" ? 503 : 500;
++    res.status(status).json({ error: err && err.message ? err.message : "PDF를 만들지 못했습니다." });
+   }
+ });
+ 
+--- a/test/weekly-report.test.js
++++ b/test/weekly-report.test.js
+@@ -0,0 +1,262 @@
++const fs = require("fs");
++const os = require("os");
++const path = require("path");
++const test = require("node:test");
++const assert = require("node:assert/strict");
++const { execFileSync } = require("child_process");
++
++const {
++  DISCLAIMER,
++  buildWeeklyReport,
++  weeklyReportHttpResult,
++} = require("../lib/weekly-report");
++const { renderWeeklyReportPdf } = require("../lib/weekly-report-pdf");
++
++const EMAIL = "owner-a@example.test";
++const OTHER = "owner-b@example.test";
++
++function yt(date, views, followers, extra) {
++  return {
++    email: EMAIL,
++    clientId: "store-shape",
++    platform: "youtube",
++    account: "합성채널",
++    at: date + "T15:00:00.000Z",
++    views,
++    followers,
++    videos: 3,
++    ...extra,
++  };
++}
++
++test("short observations are not a 7-day delta and ambiguous zero is not confirmed", () => {
++  const snapshots = {
++    version: 1,
++    lastRunAt: "2026-11-05T15:21:01.000Z",
++    days: {
++      "2026-11-04": {
++        [`${EMAIL}|store-shape|youtube`]: yt("2026-11-04", 100, 0),
++        [`${OTHER}|store-other|youtube`]: yt("2026-11-04", 99991, 8, { email: OTHER, clientId: "store-other", account: "OTHER-SECRET" }),
++      },
++      "2026-11-05": {
++        [`${EMAIL}|store-shape|youtube`]: yt("2026-11-05", null, 4),
++      },
++      "2026-11-06": {
++        [`${EMAIL}|store-shape|youtube`]: yt("2026-11-06", 140, 12),
++      },
++    },
++  };
++  const report = buildWeeklyReport({
++    email: EMAIL,
++    client: { id: "store-shape", name: "합성가게" },
++    snapshots,
++    connections: { youtube: { hasToken: true, account: { displayName: "합성채널", id: "yt-synthetic" } } },
++    jobs: [
++      {
++        id: "job-1",
++        clientId: "store-shape",
++        userEmail: EMAIL,
++        mediaType: "video",
++        files: [{ originalName: "clip.mp4" }],
++        createdAt: "2026-11-05T03:00:00.000Z",
++        tasks: [{ channel: "youtube" }, { channel: "tiktok" }],
++      },
++      {
++        id: "job-other",
++        clientId: "store-other",
++        userEmail: OTHER,
++        mediaType: "video",
++        files: [{ originalName: "clip.mp4" }],
++        createdAt: "2026-11-05T03:00:00.000Z",
++        tasks: [{ channel: "youtube" }],
++      },
++    ],
++    end: "2026-11-06",
++    days: 7,
++    generatedAt: "2026-11-06T05:20:00.000Z",
++  });
++  const blob = JSON.stringify(report);
++  assert.equal(blob.includes("OTHER-SECRET"), false);
++  assert.equal(blob.includes("99991"), false);
++  assert.equal(report.coverage.observedDates.join(","), "2026-11-04,2026-11-05,2026-11-06");
++  assert.equal(report.coverage.missingDates.includes("2026-10-31"), true);
++  assert.equal(report.coverage.missingDates.length, 4);
++  assert.equal(report.coverage.sevenDayDeltaEligible, false);
++  assert.equal(report.coverage.priorWeekEligible, false);
++  assert.equal(report.disclaimer, DISCLAIMER);
++  const views = report.channels.find((ch) => ch.platform === "youtube").metrics.find((m) => m.key === "views");
++  assert.deepEqual(views.series.map((p) => p.date), ["2026-11-04", "2026-11-06"]);
++  assert.equal(views.series[1].gapBefore, true);
++  assert.equal(views.series.some((p) => p.date === "2026-11-05"), false);
++  assert.equal(views.observedSpan.eligible, true);
++  assert.equal(views.observedSpan.difference, 40);
++  assert.equal(views.observedSpan.spanDays, 2);
++  assert.equal(views.windowBoundaryDelta.eligible, false);
++  assert.equal(views.comparison.eligible, false);
++  assert.equal(JSON.stringify(views.comparison).includes("%"), false);
++  const followers = report.channels.find((ch) => ch.platform === "youtube").metrics.find((m) => m.key === "followers");
++  assert.equal(followers.cells.find((c) => c.date === "2026-11-04").state, "ambiguous_zero");
++  assert.equal(followers.series.some((p) => p.value === 0), false);
++  assert.equal(report.publishing.uploadJobs, 1);
++  assert.equal(report.publishing.channelPublishTasks, 2);
++  assert.equal(report.publishing.singleVideoUploads, 1);
++  assert.equal(report.publishing.identity.includes("식별자는 없습니다"), true);
++  assert.equal(report.channels.find((ch) => ch.platform === "youtube").posts.available, false);
++  assert.equal(report.viewSums.length, 0);
++});
++
++test("confirmed prior zero is shown as 0 to N and full-week boundaries can qualify", () => {
++  const days = {};
++  function put(date, views) {
++    days[date] = {
++      [`${EMAIL}|store-full|youtube`]: {
++        email: EMAIL,
++        clientId: "store-full",
++        platform: "youtube",
++        at: date + "T01:00:00.000Z",
++        views,
++        followers: 5,
++        videos: 1,
++        zeroConfirmed: true,
++      },
++    };
++  }
++  put("2026-11-01", 10);
++  put("2026-11-07", 10);
++  put("2026-11-08", 10);
++  put("2026-11-14", 15);
++  const report = buildWeeklyReport({
++    email: EMAIL,
++    client: { id: "store-full", name: "합성완전주" },
++    snapshots: { version: 1, days },
++    connections: { youtube: { hasToken: true, account: { displayName: "합성완전", id: "yt-full" } } },
++    jobs: [],
++    end: "2026-11-14",
++    days: 7,
++    fixtureBanner: "합성 예시. 운영 스냅샷이 아닙니다.",
++  });
++  const views = report.channels.find((ch) => ch.platform === "youtube").metrics.find((m) => m.key === "views");
++  assert.equal(views.windowBoundaryDelta.eligible, true);
++  assert.equal(views.windowBoundaryDelta.difference, 5);
++  assert.equal(views.comparison.eligible, true);
++  assert.equal(views.comparison.text, "0 -> 5");
++  assert.equal(views.comparison.percent, null);
++  assert.equal(report.coverage.sevenDayDeltaEligible, true);
++  assert.equal(report.fixtureBanner.includes("합성"), true);
++  const zeroRow = buildWeeklyReport({
++    email: EMAIL,
++    client: { id: "store-full", name: "합성완전주" },
++    snapshots: {
++      version: 1,
++      days: {
++        "2026-11-14": {
++          [`${EMAIL}|store-full|youtube`]: {
++            email: EMAIL,
++            clientId: "store-full",
++            platform: "youtube",
++            at: "2026-11-14T01:00:00.000Z",
++            views: 0,
++            followers: 0,
++            videos: 0,
++            zeroConfirmed: true,
++          },
++        },
++      },
++    },
++    connections: { youtube: { hasToken: true, account: { displayName: "합성완전", id: "yt-full" } } },
++    jobs: [],
++    end: "2026-11-14",
++    days: 7,
++  });
++  const confirmed = zeroRow.channels.find((ch) => ch.platform === "youtube").metrics.find((m) => m.key === "views");
++  assert.equal(confirmed.cells.find((c) => c.date === "2026-11-14").state, "actual_zero");
++});
++
++test("session store boundary and date query", () => {
++  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "weekly-clients-"));
++  const root = path.join(__dirname, "..");
++  const dataDir = path.join(root, "data");
++  fs.mkdirSync(dataDir, { recursive: true });
++  fs.writeFileSync(
++    path.join(dataDir, "clients.json"),
++    JSON.stringify({
++      byUser: {
++        [EMAIL]: { clients: [{ id: "store-shape", name: "합성가게" }] },
++        [OTHER]: { clients: [{ id: "store-other", name: "다른가게" }] },
++      },
++    })
++  );
++  const clientStore = require("../lib/client-store");
++  const denied = weeklyReportHttpResult({
++    sessionEmail: EMAIL,
++    storeId: "store-other",
++    getClient: clientStore.getClient,
++    query: { days: "7", end: "2026-11-06" },
++    build: () => {
++      throw new Error("foreign store");
++    },
++  });
++  assert.equal(denied.status, 404);
++  const anon = weeklyReportHttpResult({
++    sessionEmail: "",
++    storeId: "store-shape",
++    getClient: clientStore.getClient,
++    query: {},
++    build: () => {
++      throw new Error("anon");
++    },
++  });
++  assert.equal(anon.status, 401);
++  const bad = weeklyReportHttpResult({
++    sessionEmail: EMAIL,
++    storeId: "store-shape",
++    getClient: clientStore.getClient,
++    query: { end: "11-06", days: "7" },
++    build: () => {
++      throw new Error("bad date");
++    },
++  });
++  assert.equal(bad.status, 400);
++  assert.equal(fs.existsSync(dir), true);
++});
++
++test("pdf contains every channel, the disclaimer, and more than one page", async () => {
++  const report = buildWeeklyReport({
++    email: EMAIL,
++    client: { id: "store-shape", name: "합성가게" },
++    snapshots: {
++      version: 1,
++      lastRunAt: "2026-11-05T15:21:01.000Z",
++      days: {
++        "2026-11-04": { [`${EMAIL}|store-shape|youtube`]: yt("2026-11-04", 100, 0) },
++        "2026-11-06": { [`${EMAIL}|store-shape|youtube`]: yt("2026-11-06", 140, 12) },
++      },
++    },
++    connections: {
++      youtube: { hasToken: true, account: { displayName: "합성채널", id: "yt-synthetic" } },
++      tiktok: { hasToken: true, account: { displayName: "합성틱톡", id: "tt-synthetic" } },
++    },
++    jobs: [],
++    end: "2026-11-06",
++    days: 7,
++    generatedAt: "2026-11-06T05:20:00.000Z",
++    fixtureBanner: "합성 예시. 운영 스냅샷이 아닙니다.",
++  });
++  const pdf = await renderWeeklyReportPdf(report);
++  const file = path.join(os.tmpdir(), "onepost-weekly-sample.pdf");
++  fs.writeFileSync(file, pdf);
++  const info = execFileSync("pdfinfo", [file], { encoding: "utf8" });
++  const pages = Number((info.match(/Pages:\s+(\d+)/) || [])[1]);
++  assert.ok(pages >= 2, info);
++  const text = execFileSync("pdftotext", ["-layout", file, "-"], { encoding: "utf8" });
++  assert.equal(text.includes(DISCLAIMER), true);
++  assert.equal(text.includes("합성가게"), true);
++  assert.equal(text.includes("YouTube"), true);
++  assert.equal(text.includes("TikTok"), true);
++  assert.equal(text.includes("네이버 블로그"), true);
++  assert.equal(text.includes("7일 델타와 이전 주 비교는 만들 수 없습니다."), true);
++  assert.equal(text.includes("OTHER-SECRET"), false);
++  assert.equal(text.includes("%"), false);
++  const page2 = execFileSync("pdftotext", ["-f", "2", "-l", "2", "-layout", file, "-"], { encoding: "utf8" });
++  assert.ok(page2.trim().length > 40, page2);
++});
