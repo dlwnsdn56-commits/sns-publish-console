@@ -1,5 +1,9 @@
 # SNS 발행 콘솔 (내부 v1)
 
+GitHub 의 이 트리는 프로덕션 원포스트가 아닙니다. 프로덕션 소스에 맞춘 채널 분석은 `production-patch/onepost-channel-analysis.patch` 입니다. 적용 방법과 해시은 `production-patch/APPLY.md` 에 있습니다. 이 트리를 `/opt/onepost/sns-publish-console` 에 덮어쓰지 않습니다.
+
+
+
 영상 SNS 대행 운영자용 발행 콘솔입니다. 로그인 없음. 클라이언트 2곳(A/B)만 사용합니다.
 
 ## 실행 방법
