@@ -1,0 +1,2550 @@
+--- a/lib/weekly-report-pdf.js
++++ b/lib/weekly-report-pdf.js
+@@ -0,0 +1,207 @@
++const fs = require("fs");
++const path = require("path");
++const PDFDocument = require("pdfkit");
++const FONT = path.join(__dirname, "..", "assets", "fonts", "NotoSansKR-Regular.ttf");
++
++function fontAvailable() {
++  return fs.existsSync(FONT);
++}
++
++function renderWeeklyReportPdf(report) {
++  if (!fontAvailable()) {
++    const err = new Error("한국어 글꼴 파일이 없습니다.");
++    err.code = "FONT_MISSING";
++    throw err;
++  }
++  return new Promise((resolve, reject) => {
++    const doc = new PDFDocument({ size: "A4", margin: 40, info: { Title: "원포스트 주간 리포트" } });
++    const chunks = [];
++    doc.on("data", (chunk) => chunks.push(chunk));
++    doc.on("end", () => resolve(Buffer.concat(chunks)));
++    doc.on("error", reject);
++    doc.registerFont("kr", FONT);
++    doc.font("kr");
++    const left = 40;
++    const width = 515;
++    const bottom = 780;
++    let y = 36;
++
++    function paintCanvas() {
++      doc.save();
++      doc.rect(0, 0, 595.28, 841.89).fill("#F4F6F8");
++      doc.restore();
++    }
++    paintCanvas();
++
++    function runningHeader() {
++      doc.font("kr").fontSize(9).fillColor("#667085");
++      doc.text(`${report.storeName} · ${report.period.start} ~ ${report.period.end} · 한국시간`, left, 24, { width });
++      y = 46;
++    }
++
++    function newPage() {
++      doc.addPage();
++      paintCanvas();
++      runningHeader();
++    }
++
++    function ensure(height) {
++      if (y + height <= bottom) return;
++      newPage();
++    }
++
++    function text(value, size, color) {
++      ensure(size + 10);
++      doc.font("kr").fontSize(size).fillColor(color || "#111111");
++      doc.text(String(value), left, y, { width });
++      y = doc.y + 4;
++    }
++
++    const view = report.presentation;
++    if (report.fixtureBanner) {
++      doc.roundedRect(left, y, width, 28, 10).fill("#FFF6DF");
++      doc.fillColor("#7A5B12").fontSize(9).text(report.fixtureBanner, left + 10, y + 8, { width: width - 20 });
++      y += 38;
++    }
++    doc.fillColor("#667085").fontSize(11).text("주간 리포트", left, y, { width });
++    y += 16;
++    doc.fillColor("#1A1A1A").fontSize(22).text(report.storeName, left, y, { width });
++    y += 30;
++    doc.roundedRect(left, y, Math.min(280, width), 22, 11).fill("#E8F0FA");
++    doc.fillColor("#0047AB").fontSize(10).text(report.coverage.headline, left + 10, y + 5, { width: 260 });
++    y += 30;
++    doc.fillColor("#667085").fontSize(10).text(`${report.period.start} ~ ${report.period.end} · 한국시간`, left, y, { width });
++    y += 14;
++    doc.text(`마지막 수집 ${report.lastCollectedAtKst || "없음"} · 문서 작성 ${report.generatedAtKst || ""}`, left, y, { width });
++    y += 16;
++    doc.fillColor("#1A1A1A").fontSize(9).text(report.disclaimer, left, y, { width });
++    y += 28;
++    doc.fillColor("#667085").fontSize(10).text(`올린 작업 ${report.publishing.uploadJobs}건 · 채널에 올린 횟수 ${report.publishing.channelPublishTasks}건`, left, y, { width });
++    y += 20;
++    if (!view.cards.length) text("이 기간에 표시할 숫자가 없습니다.", 12);
++    const colW = (width - 12) / 2;
++    view.cards.forEach((card, index) => {
++      const col = index % 2;
++      if (col === 0) ensure(92);
++      const x = left + col * (colW + 12);
++      const top = y;
++      doc.roundedRect(x, top, colW, 82, 14).fill("#FFFFFF");
++      doc.fillColor("#667085").fontSize(9).text(`${card.channel} · ${card.label}`, x + 12, top + 10, { width: colW - 24 });
++      doc.fillColor("#1A1A1A").fontSize(20).text(card.value, x + 12, top + 28, { width: colW - 24 });
++      doc.fillColor("#667085").fontSize(8).text(card.sub, x + 12, top + 56, { width: colW - 24 });
++      if (col === 1 || index === view.cards.length - 1) y = top + 94;
++    });
++    const dates = [];
++    for (let t = Date.parse(report.period.start + "T00:00:00Z"); t <= Date.parse(report.period.end + "T00:00:00Z"); t += 86400000) {
++      dates.push(new Date(t).toISOString().slice(0, 10));
++    }
++    if (dates.length && dates.length <= 14) {
++      ensure(70);
++      doc.fillColor("#1A1A1A").fontSize(11).text("수집된 날", left, y, { width });
++      y += 18;
++      const gap = 6;
++      const boxW = (width - gap * (dates.length - 1)) / dates.length;
++      dates.forEach((date, index) => {
++        const on = report.coverage.observedDates.indexOf(date) >= 0;
++        const x = left + index * (boxW + gap);
++        doc.roundedRect(x, y, boxW, 32, 8).fill(on ? "#E8F0FA" : "#E6E8EC");
++        doc.fillColor(on ? "#0047AB" : "#667085").fontSize(8).text(date.slice(5), x, y + 10, { width: boxW, align: "center" });
++      });
++      y += 44;
++    }
++    const overview = view.detailChannels[0] && (view.detailChannels[0].shownMetrics.find((metric) => metric.key === "views") || view.detailChannels[0].shownMetrics[0]);
++    if (overview) {
++      ensure(150);
++      doc.roundedRect(left, y, width, 142, 14).fill("#FFFFFF");
++      doc.fillColor("#1A1A1A").fontSize(11).text(`${view.detailChannels[0].label} ${overview.label}`, left + 12, y + 8, { width: width - 24 });
++      drawChart(doc, overview, left + 8, y + 26, width - 16, 104);
++      y += 154;
++    }
++
++    if (view.detailChannels.length) {
++      newPage();
++      text("채널", 16);
++      for (const channel of view.detailChannels) {
++        if (y > 560) newPage();
++        text(`${channel.label}${channel.account && channel.account.displayName ? " · " + channel.account.displayName : ""}`, 14);
++        text(channel.status.label, 10, "#444444");
++        text(channel.posts.reason, 10);
++        for (const metric of channel.shownMetrics) {
++          text(`${metric.label} ${metric.asOf ? metric.asOf.value + metric.unit : ""} · ${metric.asOf ? metric.asOf.stateLabel : ""}`, 11);
++          if (metric.customerSpan) text(metric.customerSpan, 9, "#444444");
++          if (metric.comparison.eligible) text(`전주 ${metric.comparison.text}`, 10);
++          ensure(130);
++          drawChart(doc, metric, left, y, width, 108);
++          y += 116;
++        }
++      }
++    }
++    if (view.statusRows.length) {
++      if (y + 28 + view.statusRows.length * 16 > bottom) newPage();
++      text("데이터 현황", 14);
++      for (const row of view.statusRows) text(`${row.label} · ${row.note}`, 10);
++    }
++    if (y > 640) newPage();
++    text("집계 기준", 12);
++    for (const line of view.criteria) text(line, 8, "#444444");
++    doc.end();
++  });
++}
++
++function drawChart(doc, metric, x, y, width, height) {
++  const cells = metric.cells;
++  const plotX = x + 48;
++  const plotW = width - 72;
++  const plotY = y + 16;
++  const plotH = height - 42;
++  const numeric = cells.filter((cell) => cell.state === "available" || cell.state === "actual_zero");
++  const min = Math.min(...numeric.map((cell) => cell.value));
++  const max = Math.max(...numeric.map((cell) => cell.value));
++  const pad = (max - min) * 0.18 || 1;
++  const yMin = min - pad;
++  const yMax = max + pad;
++  const span = yMax - yMin;
++  doc.save();
++  doc.roundedRect(x, y - 2, width, height, 12).fill("#FFFFFF");
++  doc.font("kr").fontSize(8).fillColor("#333333");
++  doc.text(`${metric.label} (${metric.unit})`, x, y, { width });
++  doc.fillColor("#333333").text(String(max), x, plotY - 2, { width: 44, align: "right" });
++  doc.text(String(min), x, plotY + plotH - 8, { width: 44, align: "right" });
++  doc.rect(plotX, plotY, plotW, plotH).strokeColor("#dddddd").stroke();
++  const n = Math.max(cells.length, 1);
++  const coords = [];
++  cells.forEach((cell, index) => {
++    const px = plotX + (n === 1 ? plotW / 2 : (index / (n - 1)) * plotW);
++    const plotted = cell.state === "available" || cell.state === "actual_zero";
++    const py = plotted ? plotY + plotH - ((cell.value - yMin) / span) * plotH : null;
++    coords.push({ cell, px, py, plotted });
++    doc.moveTo(px, plotY + plotH).lineTo(px, plotY + plotH + 3).strokeColor("#bbbbbb").stroke();
++  });
++  let prev = null;
++  for (const point of coords) {
++    if (!point.plotted) {
++      prev = null;
++      continue;
++    }
++    doc.circle(point.px, point.py, 3).fillColor("#0047AB").fill();
++    if (prev && addOneDay(prev.cell.date) === point.cell.date) {
++      doc.moveTo(prev.px, prev.py).lineTo(point.px, point.py).strokeColor("#0047AB").lineWidth(1.4).stroke();
++    }
++    prev = point;
++  }
++  doc.font("kr").fontSize(7).fillColor("#444444");
++  const step = cells.length > 14 ? 7 : cells.length > 8 ? 2 : 1;
++  cells.forEach((cell, index) => {
++    if (index % step !== 0 && index !== cells.length - 1) return;
++    const px = coords[index].px;
++    doc.text(cell.date.slice(5), px - 14, plotY + plotH + 6, { width: 32, align: "center" });
++  });
++  doc.text("점 없는 눈금은 수집 없음이며 0이 아닙니다. 선은 다음 날로 이어질 때만 그립니다.", x, y + height - 12, { width });
++  doc.restore();
++}
++
++function addOneDay(date) {
++  return new Date(Date.parse(date + "T00:00:00Z") + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
++}
++
++module.exports = { renderWeeklyReportPdf, fontAvailable, FONT };
+--- a/lib/weekly-report.js
++++ b/lib/weekly-report.js
+@@ -0,0 +1,532 @@
++/**
++ * Store weekly report from existing snapshots and publish jobs.
++ * Does not call providers and does not write snapshot files.
++ */
++const fs = require("fs");
++const path = require("path");
++
++const SNAP_PATH = path.join(__dirname, "..", "data", "insight-snapshots.json");
++const DAY = 24 * 60 * 60 * 1000;
++const DISCLAIMER = "확인 가능한 채널 데이터를 기준으로 작성했습니다. 미수집 항목은 0으로 계산하지 않았습니다.";
++const WINDOW_DAYS = new Set([7, 14, 28]);
++/** dcbe469 collector fix deployed 2026-11-06 13:27:49 KST. */
++const YT_ZERO_COERCION_UNTIL_MS = Date.parse("2026-11-06T04:27:49.000Z");
++const STATE_LABELS = {
++  available: "확인된 값",
++  actual_zero: "실제 0",
++  ambiguous_zero: "0으로 저장됨. 실제 0으로 단정하지 않음",
++  unavailable: "값 없음",
++  absent: "수집 없음",
++  permission_needed: "권한 필요",
++  collection_error: "수집 오류",
++  unknown: "알 수 없음",
++  connected: "연결됨",
++  unconnected: "연결 안 됨",
++  unsupported: "조회 스냅샷 대상 아님",
++};
++
++const PLATFORMS = [
++  { id: "youtube", label: "YouTube", collector: true, cumulativeViews: "youtube_channel_view_count" },
++  { id: "tiktok", label: "TikTok", collector: true, cumulativeViews: "tiktok_listed_video_view_sum" },
++  { id: "instagram", label: "Instagram", collector: true, cumulativeViews: null },
++  { id: "threads", label: "Threads", collector: true, cumulativeViews: null },
++  { id: "facebook", label: "Facebook", collector: false, cumulativeViews: null },
++  { id: "x", label: "X", collector: false, cumulativeViews: null },
++  { id: "blogger", label: "Blogger", collector: false, cumulativeViews: null },
++  { id: "naver-blog", label: "네이버 블로그", collector: false, cumulativeViews: null },
++  { id: "naver-clip", label: "네이버 클립", collector: false, cumulativeViews: null },
++  { id: "youtube-community", label: "유튜브 커뮤니티", collector: false, cumulativeViews: null },
++];
++
++const METRICS = {
++  youtube: [
++    { key: "views", label: "누적 조회수", unit: "회", kind: "cumulative", definition: "채널에 쌓인 조회수입니다. 그 주에 새로 생긴 조회수만 뜻하지는 않습니다.", comparable: "youtube_channel_view_count" },
++    { key: "followers", label: "구독자", unit: "명", kind: "cumulative", definition: "기준 시각의 구독자 수입니다.", comparable: null },
++    { key: "videos", label: "동영상 수", unit: "개", kind: "cumulative", definition: "기준 시각의 동영상 수입니다.", comparable: null },
++  ],
++  tiktok: [
++    { key: "views", label: "영상 조회수 합", unit: "회", kind: "cumulative", definition: "수집 당시 영상들의 조회수를 더한 값입니다. 유튜브 누적 조회수와는 다릅니다.", comparable: "tiktok_listed_video_view_sum" },
++    { key: "followers", label: "팔로워", unit: "명", kind: "cumulative", definition: "기준 시각의 팔로워 수입니다.", comparable: null },
++    { key: "likes", label: "좋아요", unit: "개", kind: "cumulative", definition: "기준 시각까지 받은 좋아요 수입니다.", comparable: null },
++    { key: "videos", label: "동영상 수", unit: "개", kind: "cumulative", definition: "기준 시각의 동영상 수입니다.", comparable: null },
++  ],
++  instagram: [
++    { key: "dayViews", label: "하루 조회", unit: "회", kind: "period_occurring", definition: "그 날짜에 기록이 있을 때만 하루 동안의 조회입니다.", comparable: null },
++    { key: "followers", label: "팔로워", unit: "명", kind: "cumulative", definition: "기준 시각의 팔로워 수입니다.", comparable: null },
++    { key: "videos", label: "게시물 수", unit: "개", kind: "cumulative", definition: "기준 시각의 게시물 수입니다.", comparable: null },
++  ],
++  threads: [
++    { key: "dayViews", label: "하루 조회", unit: "회", kind: "period_occurring", definition: "그 날짜에 기록이 있을 때만 하루 동안의 조회입니다.", comparable: null },
++    { key: "followers", label: "팔로워", unit: "명", kind: "cumulative", definition: "기준 시각의 팔로워 수입니다.", comparable: null },
++  ],
++};
++
++function addDays(dateStr, n) {
++  return new Date(Date.parse(dateStr + "T00:00:00Z") + n * DAY).toISOString().slice(0, 10);
++}
++
++function kstDate(ms = Date.now()) {
++  return new Date(ms + 9 * 3600 * 1000).toISOString().slice(0, 10);
++}
++
++function isDate(value) {
++  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(value + "T00:00:00Z"));
++}
++
++function enumerate(start, end) {
++  const out = [];
++  for (let d = start; d <= end; d = addDays(d, 1)) out.push(d);
++  return out;
++}
++
++function finiteNumber(value) {
++  return typeof value === "number" && Number.isFinite(value) ? value : null;
++}
++
++function formatKst(iso) {
++  const ms = Date.parse(iso || "");
++  if (!Number.isFinite(ms)) return null;
++  const d = new Date(ms + 9 * 3600 * 1000);
++  const p = (n) => String(n).padStart(2, "0");
++  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())} 한국시간`;
++}
++
++function stateLabel(code) {
++  return STATE_LABELS[code] || "알 수 없음";
++}
++
++function readSnapshotFile(filePath = SNAP_PATH) {
++  try {
++    const data = JSON.parse(fs.readFileSync(filePath, "utf8"));
++    if (!data || typeof data !== "object" || !data.days || typeof data.days !== "object") {
++      return { version: 1, days: {}, lastRunAt: null };
++    }
++    return data;
++  } catch {
++    return { version: 1, days: {}, lastRunAt: null };
++  }
++}
++
++function resolveWindow({ end, days, now }) {
++  const length = WINDOW_DAYS.has(Number(days)) ? Number(days) : 7;
++  const endDate = isDate(end) ? end : kstDate(now ? Date.parse(now) : Date.now());
++  const start = addDays(endDate, -(length - 1));
++  const dates = enumerate(start, endDate);
++  const priorEnd = addDays(start, -1);
++  const priorStart = addDays(priorEnd, -(length - 1));
++  return { days: length, start, end: endDate, dates, priorStart, priorEnd, priorDates: enumerate(priorStart, priorEnd), timeZone: "Asia/Seoul" };
++}
++
++function snapKey(email, clientId, platform) {
++  return `${String(email || "").toLowerCase()}|${clientId}|${platform}`;
++}
++
++function rowFor(snapshots, email, clientId, platform, date) {
++  const day = snapshots && snapshots.days && snapshots.days[date];
++  if (!day) return null;
++  const row = day[snapKey(email, clientId, platform)];
++  if (!row) return null;
++  if (row.email && row.email !== String(email).toLowerCase()) return null;
++  if (row.clientId && row.clientId !== clientId) return null;
++  return row;
++}
++
++function ambiguousYoutubeZero(metricKey, row, value) {
++  if (value !== 0) return false;
++  if (metricKey !== "views" && metricKey !== "followers" && metricKey !== "videos") return false;
++  const at = Date.parse(row && row.at);
++  if (!Number.isFinite(at)) return true;
++  return at <= YT_ZERO_COERCION_UNTIL_MS;
++}
++
++function pointState(platformId, metric, row) {
++  if (!row || row.error) return { state: "absent", value: null };
++  if (!Object.prototype.hasOwnProperty.call(row, metric.key) || row[metric.key] == null) {
++    const missing = new Set(row.missingScope || []);
++    if (missing.size) return { state: "permission_needed", value: null, reason: Array.from(missing).join(", ") };
++    if (Object.prototype.hasOwnProperty.call(row, metric.key)) return { state: "unavailable", value: null };
++    return { state: "absent", value: null };
++  }
++  const value = finiteNumber(row[metric.key]);
++  if (value == null) return { state: "unknown", value: null, reason: "숫자 값이 아닙니다" };
++  if (platformId === "youtube" && ambiguousYoutubeZero(metric.key, row, value)) {
++    return {
++      state: "ambiguous_zero",
++      value: 0,
++      reason: "0으로 저장되어 있습니다. 2026-11-06 13:27 한국시간까지 수집기는 빠진 YouTube 통계를 0으로 넣었습니다. 이 수집 시각은 그 경계 이전이라 실제 0으로 단정하지 않습니다.",
++    };
++  }
++  if (value === 0) return { state: "actual_zero", value: 0 };
++  return { state: "available", value };
++}
++
++function seriesFor(snapshots, email, clientId, platform, metric, dates) {
++  const points = [];
++  const cells = [];
++  for (const date of dates) {
++    const row = rowFor(snapshots, email, clientId, platform.id, date);
++    if (!row) {
++      cells.push({ date, state: "absent", stateLabel: stateLabel("absent"), value: null });
++      continue;
++    }
++    if (row.error && finiteNumber(row[metric.key]) == null) {
++      cells.push({
++        date,
++        state: "collection_error",
++        stateLabel: stateLabel("collection_error"),
++        value: null,
++        reason: String(row.error),
++      });
++      continue;
++    }
++    const point = pointState(platform.id, metric, row);
++    cells.push({
++      date,
++      ...point,
++      stateLabel: stateLabel(point.state),
++      at: row.at || null,
++      atKst: formatKst(row.at),
++    });
++    if (point.state === "available" || point.state === "actual_zero") {
++      const prev = points[points.length - 1];
++      points.push({ date, value: point.value, gapBefore: prev ? addDays(prev.date, 1) !== date : false });
++    }
++  }
++  return { points, cells };
++}
++
++function observedSpan(points) {
++  if (points.length < 2) {
++    return { eligible: false, reason: "숫자 수집점이 2개 미만입니다." };
++  }
++  const first = points[0];
++  const last = points[points.length - 1];
++  const spanDays = enumerate(first.date, last.date).length - 1;
++  return {
++    eligible: true,
++    fromDate: first.date,
++    toDate: last.date,
++    fromValue: first.value,
++    toValue: last.value,
++    difference: last.value - first.value,
++    spanDays,
++    label: `${first.date} ${first.value} -> ${last.date} ${last.value}`,
++  };
++}
++
++function boundaryDelta(points, start, end) {
++  const a = points.find((point) => point.date === start);
++  const b = points.find((point) => point.date === end);
++  if (!a || !b) {
++    return { eligible: false, reason: "기간의 시작일 또는 종료일에 숫자 수집점이 없습니다. 없는 날을 0으로 두지 않습니다." };
++  }
++  return {
++    eligible: true,
++    fromDate: start,
++    toDate: end,
++    fromValue: a.value,
++    toValue: b.value,
++    difference: b.value - a.value,
++    label: `${start} ${a.value} -> ${end} ${b.value}`,
++  };
++}
++
++function comparisonText(prior, current) {
++  if (!prior || !prior.eligible || !current || !current.eligible) {
++    return { eligible: false, text: "같은 정의의 이전 기간 비교는 없습니다.", prior: null, current: current && current.eligible ? current : null };
++  }
++  if (prior.difference === 0) {
++    return { eligible: true, text: `0 -> ${current.difference}`, prior, current, percent: null };
++  }
++  return {
++    eligible: true,
++    text: `${prior.difference} -> ${current.difference}`,
++    prior,
++    current,
++    percent: null,
++  };
++}
++
++function periodOccurring(cells, dates) {
++  const observed = cells.filter((cell) => cell.state === "available" || cell.state === "actual_zero");
++  if (!observed.length) return { eligible: false, reason: "기간 안에 하루 조회 숫자가 없습니다.", observedDays: 0, windowDays: dates.length };
++  const sum = observed.reduce((total, cell) => total + cell.value, 0);
++  return {
++    eligible: true,
++    complete: observed.length === dates.length,
++    sum,
++    observedDays: observed.length,
++    windowDays: dates.length,
++    missingDays: dates.length - observed.length,
++    label: observed.length === dates.length
++      ? `기간 발생 조회 합 ${sum}`
++      : `관측 ${observed.length}일 합 ${sum}. 빠진 ${dates.length - observed.length}일은 합계에 넣지 않았습니다.`,
++  };
++}
++
++function latestCollectedAt(snapshots, email, clientId) {
++  let latest = null;
++  const days = (snapshots && snapshots.days) || {};
++  for (const date of Object.keys(days)) {
++    for (const platform of PLATFORMS) {
++      const row = rowFor(snapshots, email, clientId, platform.id, date);
++      if (!row || !row.at) continue;
++      if (!latest || row.at > latest) latest = row.at;
++    }
++  }
++  return latest || (snapshots && snapshots.lastRunAt) || null;
++}
++
++function accountOf(conn) {
++  if (!conn || !conn.account) return null;
++  return { displayName: conn.account.displayName || null, id: conn.account.id || null };
++}
++
++function channelStatus(platform, conn) {
++  if (!platform.collector) return { code: "unsupported", label: "조회 스냅샷 대상 아님" };
++  if (!conn || (!conn.hasToken && !(conn.account && (conn.account.displayName || conn.account.id)))) {
++    return { code: "unconnected", label: "연결 안 됨" };
++  }
++  if (conn.hasToken && conn.account) return { code: "connected", label: "연결됨" };
++  if (!conn.hasToken) return { code: "unconnected", label: "연결 안 됨" };
++  return { code: "unknown", label: "계정 식별자 없음" };
++}
++
++function metricReport(platform, metric, snapshots, email, clientId, window) {
++  const currentSeries = seriesFor(snapshots, email, clientId, platform, metric, window.dates);
++  const priorSeries = seriesFor(snapshots, email, clientId, platform, metric, window.priorDates);
++  const span = observedSpan(currentSeries.points);
++  const boundary = boundaryDelta(currentSeries.points, window.start, window.end);
++  const priorBoundary = boundaryDelta(priorSeries.points, window.priorStart, window.priorEnd);
++  const compare = window.days === 7 && metric.kind === "cumulative"
++    ? comparisonText(priorBoundary, boundary)
++    : { eligible: false, text: "이전 주 비교는 7일 기간에서, 양쪽 기간의 시작일과 종료일에 같은 정의의 숫자가 있을 때만 계산합니다.", percent: null };
++  const occurring = metric.kind === "period_occurring" ? periodOccurring(currentSeries.cells, window.dates) : null;
++  const latestCell = [...currentSeries.cells].reverse().find((cell) => cell.state === "available" || cell.state === "actual_zero" || cell.state === "ambiguous_zero");
++  return {
++    key: metric.key,
++    label: metric.label,
++    unit: metric.unit,
++    kind: metric.kind,
++    definition: metric.definition,
++    comparable: metric.comparable,
++    asOf: latestCell
++      ? {
++          date: latestCell.date,
++          value: latestCell.value,
++          state: latestCell.state,
++          stateLabel: latestCell.stateLabel,
++          at: latestCell.at || null,
++          atKst: latestCell.atKst || null,
++        }
++      : null,
++    series: currentSeries.points,
++    cells: currentSeries.cells,
++    observedSpan: span,
++    windowBoundaryDelta: boundary,
++    priorWeek: priorBoundary,
++    comparison: compare,
++    periodOccurring: occurring,
++  };
++}
++
++function viewSum(channels) {
++  const groups = new Map();
++  for (const channel of channels) {
++    for (const metric of channel.metrics) {
++      if (!metric.comparable || !metric.windowBoundaryDelta.eligible) continue;
++      if (!groups.has(metric.comparable)) groups.set(metric.comparable, []);
++      groups.get(metric.comparable).push({ channel: channel.label, difference: metric.windowBoundaryDelta.difference, fromDate: metric.windowBoundaryDelta.fromDate, toDate: metric.windowBoundaryDelta.toDate });
++    }
++  }
++  const sums = [];
++  for (const [definition, items] of groups) {
++    if (items.length < 2) continue;
++    const sameWindow = items.every((item) => item.fromDate === items[0].fromDate && item.toDate === items[0].toDate);
++    if (!sameWindow) continue;
++    sums.push({
++      label: "조회 합계(중복 포함)",
++      definition,
++      fromDate: items[0].fromDate,
++      toDate: items[0].toDate,
++      channels: items.map((item) => item.channel),
++      value: items.reduce((total, item) => total + item.difference, 0),
++    });
++  }
++  return sums;
++}
++
++function publishingReport(jobs, email, clientId, window) {
++  const want = String(email || "").toLowerCase();
++  const mine = (jobs || []).filter((job) => {
++    if (!job || job.clientId !== clientId) return false;
++    if (job.userEmail && String(job.userEmail).toLowerCase() !== want) return false;
++    const created = job.createdAt ? kstDate(Date.parse(job.createdAt)) : null;
++    return created && created >= window.start && created <= window.end;
++  });
++  const tasks = mine.flatMap((job) => job.tasks || []);
++  const singleVideoJobs = mine.filter((job) => job.mediaType === "video" && Array.isArray(job.files) && job.files.length === 1).length;
++  return {
++    uploadJobs: mine.length,
++    channelPublishTasks: tasks.length,
++    singleVideoUploads: singleVideoJobs,
++    identity: "같은 영상인지는 파일 내용으로 구분하지 못했습니다. 올린 작업 수와 채널에 올린 횟수를 따로 적습니다.",
++  };
++}
++
++function channelHasNumbers(channel) {
++  return channel.metrics.some((metric) => metric.series.length > 0);
++}
++
++function coverageHeadline(period, coverage) {
++  const seen = coverage.observedDates.length;
++  if (period.days === 7) {
++    return coverage.priorWeekEligible
++      ? `${period.days}일 중 ${seen}일 수집 · 전주 비교를 표시합니다`
++      : `${period.days}일 중 ${seen}일 수집 · 전주 비교는 자료 부족`;
++  }
++  return coverage.priorWeekEligible
++    ? `${period.days}일 중 ${seen}일 수집 · 이전 기간 비교를 표시합니다`
++    : `${period.days}일 중 ${seen}일 수집 · 이전 기간 비교는 자료 부족`;
++}
++
++function statusNote(channel) {
++  if (channel.status.code === "unconnected") return "연결 안 됨";
++  if (channel.status.code === "unsupported") return "조회를 모으지 않는 채널";
++  if (channel.status.code === "unknown") return "계정 정보를 확인하지 못했습니다";
++  const error = channel.metrics.some((metric) => metric.cells.some((cell) => cell.state === "collection_error"));
++  if (error) return "수집 중 오류가 있습니다";
++  return "이 기간에 숫자가 없습니다";
++}
++
++function presentReport(report) {
++  const cards = [];
++  const detailChannels = [];
++  const statusRows = [];
++  for (const channel of report.channels) {
++    if (!channelHasNumbers(channel)) {
++      statusRows.push({ label: channel.label, status: channel.status.label, note: statusNote(channel) });
++      continue;
++    }
++    const metrics = channel.metrics.filter((metric) => metric.series.length > 0).map((metric) => ({
++      ...metric,
++      customerSpan: metric.observedSpan.eligible
++        ? `${metric.observedSpan.fromDate} ${metric.observedSpan.fromValue}${metric.unit}에서 ${metric.observedSpan.toDate} ${metric.observedSpan.toValue}${metric.unit}. 차이 ${metric.observedSpan.difference}${metric.unit}, ${metric.observedSpan.spanDays}일 간격`
++        : "",
++    }));
++    detailChannels.push({ ...channel, shownMetrics: metrics });
++    for (const metric of metrics) {
++      if (!metric.asOf || metric.asOf.value == null) continue;
++      cards.push({
++        channel: channel.label,
++        label: metric.label,
++        value: `${metric.asOf.value}${metric.unit}`,
++        sub: metric.asOf.state === "ambiguous_zero" ? metric.asOf.stateLabel : `${metric.asOf.date} 기준`,
++        span: metric.customerSpan,
++      });
++    }
++  }
++  const criteria = [
++    `수집이 없는 날: ${report.coverage.missingDates.join(", ") || "없음"}. 이 날들은 0이 아닙니다.`,
++    "그래프 선은 바로 다음 날에 숫자가 있을 때만 잇습니다.",
++    "전주 비교는 7일의 첫날과 마지막 날에 같은 항목의 숫자가 있을 때만 합니다.",
++    "유튜브에 0으로 저장된 값은 2026-11-06 13:27 한국시간 이전 수집이면 실제 0으로 단정하지 않습니다.",
++    "게시물마다의 조회수는 저장되어 있지 않습니다.",
++    report.publishing.identity,
++    "유튜브 조회수는 채널에 쌓인 누적 조회수입니다. 틱톡 조회수는 그때 확인한 영상 조회수의 합입니다. 둘을 하나의 합계로 만들지 않습니다.",
++  ];
++  return { cards, detailChannels, statusRows, criteria };
++}
++
++function buildWeeklyReport({ email, client, snapshots, connections, jobs, end, days, now, generatedAt, fixtureBanner }) {
++  if (!email) throw new Error("email is required");
++  if (!client || !client.id) throw new Error("client is required");
++  const window = resolveWindow({ end, days, now });
++  const snaps = snapshots || { version: 1, days: {} };
++  const conns = connections || {};
++  const observedDates = window.dates.filter((date) => PLATFORMS.some((platform) => rowFor(snaps, email, client.id, platform.id, date)));
++  const channels = PLATFORMS.map((platform) => {
++    const metrics = (METRICS[platform.id] || []).map((metric) => metricReport(platform, metric, snaps, email, client.id, window));
++    const status = channelStatus(platform, conns[platform.id]);
++    const errors = metrics.flatMap((metric) => metric.cells.filter((cell) => cell.state === "collection_error").map((cell) => cell.date));
++    if (status.code === "connected" && !metrics.some((metric) => metric.series.length) && !errors.length) {
++      status.detail = "연결 기록은 있으나 이 기간의 숫자 수집점이 없습니다.";
++    }
++    return {
++      platform: platform.id,
++      label: platform.label,
++      collector: platform.collector,
++      status,
++      account: accountOf(conns[platform.id]),
++      metrics,
++      posts: { available: false, reason: "게시물별 통계 미수집" },
++    };
++  });
++  const sevenDayDeltaEligible = window.days === 7 && channels.some((channel) => channel.metrics.some((metric) => metric.windowBoundaryDelta.eligible));
++  const priorWeekEligible = channels.some((channel) => channel.metrics.some((metric) => metric.comparison.eligible));
++  const report = {
++    storeId: client.id,
++    storeName: client.name || client.id,
++    email: String(email).toLowerCase(),
++    generatedAt: generatedAt || new Date().toISOString(),
++    timeZone: "Asia/Seoul",
++    disclaimer: DISCLAIMER,
++    fixtureBanner: fixtureBanner || null,
++    period: { start: window.start, end: window.end, days: window.days, priorStart: window.priorStart, priorEnd: window.priorEnd },
++    lastCollectedAt: latestCollectedAt(snaps, email, client.id),
++    lastCollectedAtKst: formatKst(latestCollectedAt(snaps, email, client.id)),
++    generatedAtKst: formatKst(generatedAt || new Date().toISOString()),
++    coverage: {
++      windowDays: window.dates.length,
++      observedDates,
++      missingDates: window.dates.filter((date) => !observedDates.includes(date)),
++      sevenDayDeltaEligible,
++      priorWeekEligible,
++      headline: "",
++    },
++    publishing: publishingReport(jobs, email, client.id, window),
++    viewSums: viewSum(channels),
++    channels,
++  };
++  report.coverage.headline = coverageHeadline(report.period, report.coverage);
++  report.presentation = presentReport(report);
++  report.suggestions = [report.coverage.headline];
++  return report;
++}
++
++function weeklyReportHttpResult({ sessionEmail, storeId, getClient, query, build }) {
++  if (!sessionEmail) return { status: 401, body: { error: "로그인이 필요합니다." } };
++  const client = getClient(sessionEmail, storeId);
++  if (!client) return { status: 404, body: { error: "가게를 찾을 수 없습니다." } };
++  const days = query && query.days != null ? Number(query.days) : 7;
++  if (query && query.days != null && !WINDOW_DAYS.has(days)) {
++    return { status: 400, body: { error: "기간은 7, 14, 28일만 선택할 수 있습니다." } };
++  }
++  if (query && query.end && !isDate(String(query.end))) {
++    return { status: 400, body: { error: "종료일은 YYYY-MM-DD 형식이어야 합니다." } };
++  }
++  return {
++    status: 200,
++    body: build({
++      email: sessionEmail,
++      client,
++      end: query && query.end ? String(query.end) : undefined,
++      days,
++    }),
++  };
++}
++
++module.exports = {
++  DISCLAIMER,
++  PLATFORMS,
++  STATE_LABELS,
++  YT_ZERO_COERCION_UNTIL_MS,
++  buildWeeklyReport,
++  weeklyReportHttpResult,
++  resolveWindow,
++  readSnapshotFile,
++  formatKst,
++  stateLabel,
++  addDays,
++  kstDate,
++};
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -10,7 +10,17 @@
+       "dependencies": {
+         "dotenv": "^17.4.2",
+         "express": "^4.21.2",
+-        "multer": "^1.4.5-lts.1"
++        "multer": "^1.4.5-lts.1",
++        "pdfkit": "^0.15.2"
++      }
++    },
++    "node_modules/@swc/helpers": {
++      "version": "0.3.17",
++      "resolved": "https://registry.npmjs.org/@swc/helpers/-/helpers-0.3.17.tgz",
++      "integrity": "sha512-tb7Iu+oZ+zWJZ3HJqwx8oNwSDIU440hmVMDPhpACWQWnrZHK99Bxs70gT1L2dnr5Hg50ZRWEFkQCAnOVVV0z1Q==",
++      "license": "MIT",
++      "dependencies": {
++        "tslib": "^2.4.0"
+       }
+     },
+     "node_modules/accepts": {
+@@ -30,10 +40,61 @@
+       "resolved": "https://registry.npmjs.org/append-field/-/append-field-1.0.0.tgz",
+       "integrity": "sha512-klpgFSWLW1ZEs8svjfb7g4qWY0YS5imI82dTg+QahUvJ8YqAY0P10Uk8tTyh9ZGuYEZEMaeJYCF5BFuX552hsw=="
+     },
++    "node_modules/array-buffer-byte-length": {
++      "version": "1.0.2",
++      "resolved": "https://registry.npmjs.org/array-buffer-byte-length/-/array-buffer-byte-length-1.0.2.tgz",
++      "integrity": "sha512-LHE+8BuR7RYGDKvnrmcuSq3tDcKv9OFEXQt/HpbZhY7V6h0zlUXutnAD82GiFx9rdieCMjkvtcsPqBwgUl1Iiw==",
++      "license": "MIT",
++      "dependencies": {
++        "call-bound": "^1.0.3",
++        "is-array-buffer": "^3.0.5"
++      },
++      "engines": {
++        "node": ">= 0.4"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/ljharb"
++      }
++    },
+     "node_modules/array-flatten": {
+       "version": "1.1.1",
+       "resolved": "https://registry.npmjs.org/array-flatten/-/array-flatten-1.1.1.tgz",
+       "integrity": "sha512-PCVAQswWemu6UdxsDFFX/+gVeYqKAod3D3UVm91jHwynguOwAvYPhx8nNlM++NqRcK6CxxpUafjmhIdKiHibqg=="
++    },
++    "node_modules/available-typed-arrays": {
++      "version": "1.0.7",
++      "resolved": "https://registry.npmjs.org/available-typed-arrays/-/available-typed-arrays-1.0.7.tgz",
++      "integrity": "sha512-wvUjBtSGN7+7SjNpq/9M2Tg350UZD3q62IFZLbRAR1bSMlCo1ZaeW+BJ+D090e4hIIZLBcTDWe4Mh4jvUDajzQ==",
++      "license": "MIT",
++      "dependencies": {
++        "possible-typed-array-names": "^1.0.0"
++      },
++      "engines": {
++        "node": ">= 0.4"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/ljharb"
++      }
++    },
++    "node_modules/base64-js": {
++      "version": "1.5.1",
++      "resolved": "https://registry.npmjs.org/base64-js/-/base64-js-1.5.1.tgz",
++      "integrity": "sha512-AKpaYlHn8t4SVbOHCy+b5+KKgvR4vrsD8vbvrbiQJps7fKDTkjkDry6ji0rUJjC0kzbNePLwzxq8iypo41qeWA==",
++      "funding": [
++        {
++          "type": "github",
++          "url": "https://github.com/sponsors/feross"
++        },
++        {
++          "type": "patreon",
++          "url": "https://www.patreon.com/feross"
++        },
++        {
++          "type": "consulting",
++          "url": "https://feross.org/support"
++        }
++      ],
++      "license": "MIT"
+     },
+     "node_modules/body-parser": {
+       "version": "1.20.6",
+@@ -58,6 +119,24 @@
+         "npm": "1.2.8000 || >= 1.4.16"
+       }
+     },
++    "node_modules/brotli": {
++      "version": "1.3.3",
++      "resolved": "https://registry.npmjs.org/brotli/-/brotli-1.3.3.tgz",
++      "integrity": "sha512-oTKjJdShmDuGW94SyyaoQvAjf30dZaHnjJ8uAF+u2/vGJkJbJPJAT1gDiOJP5v1Zb6f9KEyW/1HpuaWIXtGHPg==",
++      "license": "MIT",
++      "dependencies": {
++        "base64-js": "^1.1.2"
++      }
++    },
++    "node_modules/browserify-zlib": {
++      "version": "0.2.0",
++      "resolved": "https://registry.npmjs.org/browserify-zlib/-/browserify-zlib-0.2.0.tgz",
++      "integrity": "sha512-Z942RysHXmJrhqk88FmKBVq/v5tqmSkDz7p54G/MGyjMnCFFnC79XWNbg+Vta8W6Wb2qtSZTSxIGkJrRpCFEiA==",
++      "license": "MIT",
++      "dependencies": {
++        "pako": "~1.0.5"
++      }
++    },
+     "node_modules/buffer-from": {
+       "version": "1.1.2",
+       "resolved": "https://registry.npmjs.org/buffer-from/-/buffer-from-1.1.2.tgz",
+@@ -82,6 +161,24 @@
+         "node": ">= 0.8"
+       }
+     },
++    "node_modules/call-bind": {
++      "version": "1.0.9",
++      "resolved": "https://registry.npmjs.org/call-bind/-/call-bind-1.0.9.tgz",
++      "integrity": "sha512-a/hy+pNsFUTR+Iz8TCJvXudKVLAnz/DyeSUo10I5yvFDQJBFU2s9uqQpoSrJlroHUKoKqzg+epxyP9lqFdzfBQ==",
++      "license": "MIT",
++      "dependencies": {
++        "call-bind-apply-helpers": "^1.0.2",
++        "es-define-property": "^1.0.1",
++        "get-intrinsic": "^1.3.0",
++        "set-function-length": "^1.2.2"
++      },
++      "engines": {
++        "node": ">= 0.4"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/ljharb"
++      }
++    },
+     "node_modules/call-bind-apply-helpers": {
+       "version": "1.0.2",
+       "resolved": "https://registry.npmjs.org/call-bind-apply-helpers/-/call-bind-apply-helpers-1.0.2.tgz",
+@@ -107,6 +204,15 @@
+       },
+       "funding": {
+         "url": "https://github.com/sponsors/ljharb"
++      }
++    },
++    "node_modules/clone": {
++      "version": "2.1.2",
++      "resolved": "https://registry.npmjs.org/clone/-/clone-2.1.2.tgz",
++      "integrity": "sha512-3Pe/CF1Nn94hyhIYpjtiLhdCoEoz0DqQ+988E9gmeEdQZlojxnOb74wctFyuwWQHzqyf9X7C7MG8juUpqBJT8w==",
++      "license": "MIT",
++      "engines": {
++        "node": ">=0.8"
+       }
+     },
+     "node_modules/concat-stream": {
+@@ -160,6 +266,13 @@
+       "resolved": "https://registry.npmjs.org/core-util-is/-/core-util-is-1.0.3.tgz",
+       "integrity": "sha512-ZQBvi1DcpJ4GDqanjucZ2Hj3wEO5pZDS89BWbkcrvdxksJorwUDDZamX9ldFkp9aw2lmBDLgkObEA4DWNJ9FYQ=="
+     },
++    "node_modules/crypto-js": {
++      "version": "4.2.0",
++      "resolved": "https://registry.npmjs.org/crypto-js/-/crypto-js-4.2.0.tgz",
++      "integrity": "sha512-KALDyEYgpY+Rlob/iriUtjV6d5Eq+Y191A5g4UqLAi8CyGP9N1+FdVbkc1SxKc2r4YAYqG8JzO2KGL+AizD70Q==",
++      "deprecated": "Active development of CryptoJS has been discontinued. This library is no longer maintained.",
++      "license": "MIT"
++    },
+     "node_modules/debug": {
+       "version": "2.6.9",
+       "resolved": "https://registry.npmjs.org/debug/-/debug-2.6.9.tgz",
+@@ -168,6 +281,78 @@
+         "ms": "2.0.0"
+       }
+     },
++    "node_modules/deep-equal": {
++      "version": "2.2.3",
++      "resolved": "https://registry.npmjs.org/deep-equal/-/deep-equal-2.2.3.tgz",
++      "integrity": "sha512-ZIwpnevOurS8bpT4192sqAowWM76JDKSHYzMLty3BZGSswgq6pBaH3DhCSW5xVAZICZyKdOBPjwww5wfgT/6PA==",
++      "license": "MIT",
++      "dependencies": {
++        "array-buffer-byte-length": "^1.0.0",
++        "call-bind": "^1.0.5",
++        "es-get-iterator": "^1.1.3",
++        "get-intrinsic": "^1.2.2",
++        "is-arguments": "^1.1.1",
++        "is-array-buffer": "^3.0.2",
++        "is-date-object": "^1.0.5",
++        "is-regex": "^1.1.4",
++        "is-shared-array-buffer": "^1.0.2",
++        "isarray": "^2.0.5",
++        "object-is": "^1.1.5",
++        "object-keys": "^1.1.1",
++        "object.assign": "^4.1.4",
++        "regexp.prototype.flags": "^1.5.1",
++        "side-channel": "^1.0.4",
++        "which-boxed-primitive": "^1.0.2",
++        "which-collection": "^1.0.1",
++        "which-typed-array": "^1.1.13"
++      },
++      "engines": {
++        "node": ">= 0.4"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/ljharb"
++      }
++    },
++    "node_modules/deep-equal/node_modules/isarray": {
++      "version": "2.0.5",
++      "resolved": "https://registry.npmjs.org/isarray/-/isarray-2.0.5.tgz",
++      "integrity": "sha512-xHjhDr3cNBK0BzdUJSPXZntQUx/mwMS5Rw4A7lPJ90XGAO6ISP/ePDNuo0vhqOZU+UD5JoodwCAAoZQd3FeAKw==",
++      "license": "MIT"
++    },
++    "node_modules/define-data-property": {
++      "version": "1.1.4",
++      "resolved": "https://registry.npmjs.org/define-data-property/-/define-data-property-1.1.4.tgz",
++      "integrity": "sha512-rBMvIzlpA8v6E+SJZoo++HAYqsLrkg7MSfIinMPFhmkorw7X+dOXVJQs+QT69zGkzMyfDnIMN2Wid1+NbL3T+A==",
++      "license": "MIT",
++      "dependencies": {
++        "es-define-property": "^1.0.0",
++        "es-errors": "^1.3.0",
++        "gopd": "^1.0.1"
++      },
++      "engines": {
++        "node": ">= 0.4"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/ljharb"
++      }
++    },
++    "node_modules/define-properties": {
++      "version": "1.2.1",
++      "resolved": "https://registry.npmjs.org/define-properties/-/define-properties-1.2.1.tgz",
++      "integrity": "sha512-8QmQKqEASLd5nx0U1B1okLElbUuuttJ/AnYmRXbbbGDWh6uS208EjD4Xqq/I9wK7u0v6O08XhTWnt5XtEbR6Dg==",
++      "license": "MIT",
++      "dependencies": {
++        "define-data-property": "^1.0.1",
++        "has-property-descriptors": "^1.0.0",
++        "object-keys": "^1.1.1"
++      },
++      "engines": {
++        "node": ">= 0.4"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/ljharb"
++      }
++    },
+     "node_modules/depd": {
+       "version": "2.0.0",
+       "resolved": "https://registry.npmjs.org/depd/-/depd-2.0.0.tgz",
+@@ -185,6 +370,12 @@
+         "npm": "1.2.8000 || >= 1.4.16"
+       }
+     },
++    "node_modules/dfa": {
++      "version": "1.2.0",
++      "resolved": "https://registry.npmjs.org/dfa/-/dfa-1.2.0.tgz",
++      "integrity": "sha512-ED3jP8saaweFTjeGX8HQPjeC1YYyZs98jGNZx6IiBvxW7JG5v492kamAQB3m2wop07CvU/RQmzcKr6bgcC5D/Q==",
++      "license": "MIT"
++    },
+     "node_modules/dotenv": {
+       "version": "17.4.2",
+       "resolved": "https://registry.npmjs.org/dotenv/-/dotenv-17.4.2.tgz",
+@@ -237,6 +428,32 @@
+       "engines": {
+         "node": ">= 0.4"
+       }
++    },
++    "node_modules/es-get-iterator": {
++      "version": "1.1.3",
++      "resolved": "https://registry.npmjs.org/es-get-iterator/-/es-get-iterator-1.1.3.tgz",
++      "integrity": "sha512-sPZmqHBe6JIiTfN5q2pEi//TwxmAFHwj/XEuYjTuse78i8KxaqMTTzxPoFKuzRpDpTJ+0NAbpfenkmH2rePtuw==",
++      "license": "MIT",
++      "dependencies": {
++        "call-bind": "^1.0.2",
++        "get-intrinsic": "^1.1.3",
++        "has-symbols": "^1.0.3",
++        "is-arguments": "^1.1.1",
++        "is-map": "^2.0.2",
++        "is-set": "^2.0.2",
++        "is-string": "^1.0.7",
++        "isarray": "^2.0.5",
++        "stop-iteration-iterator": "^1.0.0"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/ljharb"
++      }
++    },
++    "node_modules/es-get-iterator/node_modules/isarray": {
++      "version": "2.0.5",
++      "resolved": "https://registry.npmjs.org/isarray/-/isarray-2.0.5.tgz",
++      "integrity": "sha512-xHjhDr3cNBK0BzdUJSPXZntQUx/mwMS5Rw4A7lPJ90XGAO6ISP/ePDNuo0vhqOZU+UD5JoodwCAAoZQd3FeAKw==",
++      "license": "MIT"
+     },
+     "node_modules/es-object-atoms": {
+       "version": "1.1.2",
+@@ -324,6 +541,38 @@
+         "node": ">= 0.8"
+       }
+     },
++    "node_modules/fontkit": {
++      "version": "1.9.0",
++      "resolved": "https://registry.npmjs.org/fontkit/-/fontkit-1.9.0.tgz",
++      "integrity": "sha512-HkW/8Lrk8jl18kzQHvAw9aTHe1cqsyx5sDnxncx652+CIfhawokEPkeM3BoIC+z/Xv7a0yMr0f3pRRwhGH455g==",
++      "license": "MIT",
++      "dependencies": {
++        "@swc/helpers": "^0.3.13",
++        "brotli": "^1.3.2",
++        "clone": "^2.1.2",
++        "deep-equal": "^2.0.5",
++        "dfa": "^1.2.0",
++        "restructure": "^2.0.1",
++        "tiny-inflate": "^1.0.3",
++        "unicode-properties": "^1.3.1",
++        "unicode-trie": "^2.0.0"
++      }
++    },
++    "node_modules/for-each": {
++      "version": "0.3.5",
++      "resolved": "https://registry.npmjs.org/for-each/-/for-each-0.3.5.tgz",
++      "integrity": "sha512-dKx12eRCVIzqCxFGplyFKJMPvLEWgmNtUrpTiJIR5u97zEhRG8ySrtboPHZXx7daLxQVrl643cTzbab2tkQjxg==",
++      "license": "MIT",
++      "dependencies": {
++        "is-callable": "^1.2.7"
++      },
++      "engines": {
++        "node": ">= 0.4"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/ljharb"
++      }
++    },
+     "node_modules/forwarded": {
+       "version": "0.2.0",
+       "resolved": "https://registry.npmjs.org/forwarded/-/forwarded-0.2.0.tgz",
+@@ -344,6 +593,15 @@
+       "version": "1.1.2",
+       "resolved": "https://registry.npmjs.org/function-bind/-/function-bind-1.1.2.tgz",
+       "integrity": "sha512-7XHNxH7qX9xG5mIwxkhumTox/MIRNcOgDrxWsMt2pAr23WHp6MrRlN7FBSFpCpr+oVO0F744iUgR82nJMfG2SA==",
++      "funding": {
++        "url": "https://github.com/sponsors/ljharb"
++      }
++    },
++    "node_modules/functions-have-names": {
++      "version": "1.2.3",
++      "resolved": "https://registry.npmjs.org/functions-have-names/-/functions-have-names-1.2.3.tgz",
++      "integrity": "sha512-xckBUXyTIqT97tq2x2AMb+g163b5JFysYk0x4qxNFwbfQkmNZoiRHb6sPzI9/QV33WeuvVYBUIiD4NzNIyqaRQ==",
++      "license": "MIT",
+       "funding": {
+         "url": "https://github.com/sponsors/ljharb"
+       }
+@@ -394,10 +652,49 @@
+         "url": "https://github.com/sponsors/ljharb"
+       }
+     },
++    "node_modules/has-bigints": {
++      "version": "1.1.0",
++      "resolved": "https://registry.npmjs.org/has-bigints/-/has-bigints-1.1.0.tgz",
++      "integrity": "sha512-R3pbpkcIqv2Pm3dUwgjclDRVmWpTJW2DcMzcIhEXEx1oh/CEMObMm3KLmRJOdvhM7o4uQBnwr8pzRK2sJWIqfg==",
++      "license": "MIT",
++      "engines": {
++        "node": ">= 0.4"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/ljharb"
++      }
++    },
++    "node_modules/has-property-descriptors": {
++      "version": "1.0.2",
++      "resolved": "https://registry.npmjs.org/has-property-descriptors/-/has-property-descriptors-1.0.2.tgz",
++      "integrity": "sha512-55JNKuIW+vq4Ke1BjOTjM2YctQIvCT7GFzHwmfZPGo5wnrgkid0YQtnAleFSqumZm4az3n2BS+erby5ipJdgrg==",
++      "license": "MIT",
++      "dependencies": {
++        "es-define-property": "^1.0.0"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/ljharb"
++      }
++    },
+     "node_modules/has-symbols": {
+       "version": "1.1.0",
+       "resolved": "https://registry.npmjs.org/has-symbols/-/has-symbols-1.1.0.tgz",
+       "integrity": "sha512-1cDNdwJ2Jaohmb3sg4OmKaMBwuC48sYni5HUw2DvsC8LjGTLK9h+eb1X6RyuOHe4hT0ULCW68iomhjUoKUqlPQ==",
++      "engines": {
++        "node": ">= 0.4"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/ljharb"
++      }
++    },
++    "node_modules/has-tostringtag": {
++      "version": "1.0.2",
++      "resolved": "https://registry.npmjs.org/has-tostringtag/-/has-tostringtag-1.0.2.tgz",
++      "integrity": "sha512-NqADB8VjPFLM2V0VvHUewwwsw0ZWBaIdgo+ieHtK3hasLz4qeCRjYcqfB6AQrBggRKppKF8L52/VqdVsO47Dlw==",
++      "license": "MIT",
++      "dependencies": {
++        "has-symbols": "^1.0.3"
++      },
+       "engines": {
+         "node": ">= 0.4"
+       },
+@@ -451,6 +748,20 @@
+       "resolved": "https://registry.npmjs.org/inherits/-/inherits-2.0.4.tgz",
+       "integrity": "sha512-k/vGaX4/Yla3WzyMCvTQOXYeIHvqOKtnqBduzTHpzpQZzAskKMhZ2K+EnBiSM9zGSoIFeMpXKxa4dYeZIQqewQ=="
+     },
++    "node_modules/internal-slot": {
++      "version": "1.1.0",
++      "resolved": "https://registry.npmjs.org/internal-slot/-/internal-slot-1.1.0.tgz",
++      "integrity": "sha512-4gd7VpWNQNB4UKKCFFVcp1AVv+FMOgs9NKzjHKusc8jTMhd5eL1NqQqOpE0KzMds804/yHlglp3uxgluOqAPLw==",
++      "license": "MIT",
++      "dependencies": {
++        "es-errors": "^1.3.0",
++        "hasown": "^2.0.2",
++        "side-channel": "^1.1.0"
++      },
++      "engines": {
++        "node": ">= 0.4"
++      }
++    },
+     "node_modules/ipaddr.js": {
+       "version": "1.9.1",
+       "resolved": "https://registry.npmjs.org/ipaddr.js/-/ipaddr.js-1.9.1.tgz",
+@@ -459,10 +770,262 @@
+         "node": ">= 0.10"
+       }
+     },
++    "node_modules/is-arguments": {
++      "version": "1.2.0",
++      "resolved": "https://registry.npmjs.org/is-arguments/-/is-arguments-1.2.0.tgz",
++      "integrity": "sha512-7bVbi0huj/wrIAOzb8U1aszg9kdi3KN/CyU19CTI7tAoZYEZoL9yCDXpbXN+uPsuWnP02cyug1gleqq+TU+YCA==",
++      "license": "MIT",
++      "dependencies": {
++        "call-bound": "^1.0.2",
++        "has-tostringtag": "^1.0.2"
++      },
++      "engines": {
++        "node": ">= 0.4"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/ljharb"
++      }
++    },
++    "node_modules/is-array-buffer": {
++      "version": "3.0.5",
++      "resolved": "https://registry.npmjs.org/is-array-buffer/-/is-array-buffer-3.0.5.tgz",
++      "integrity": "sha512-DDfANUiiG2wC1qawP66qlTugJeL5HyzMpfr8lLK+jMQirGzNod0B12cFB/9q838Ru27sBwfw78/rdoU7RERz6A==",
++      "license": "MIT",
++      "dependencies": {
++        "call-bind": "^1.0.8",
++        "call-bound": "^1.0.3",
++        "get-intrinsic": "^1.2.6"
++      },
++      "engines": {
++        "node": ">= 0.4"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/ljharb"
++      }
++    },
++    "node_modules/is-bigint": {
++      "version": "1.1.0",
++      "resolved": "https://registry.npmjs.org/is-bigint/-/is-bigint-1.1.0.tgz",
++      "integrity": "sha512-n4ZT37wG78iz03xPRKJrHTdZbe3IicyucEtdRsV5yglwc3GyUfbAfpSeD0FJ41NbUNSt5wbhqfp1fS+BgnvDFQ==",
++      "license": "MIT",
++      "dependencies": {
++        "has-bigints": "^1.0.2"
++      },
++      "engines": {
++        "node": ">= 0.4"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/ljharb"
++      }
++    },
++    "node_modules/is-boolean-object": {
++      "version": "1.2.2",
++      "resolved": "https://registry.npmjs.org/is-boolean-object/-/is-boolean-object-1.2.2.tgz",
++      "integrity": "sha512-wa56o2/ElJMYqjCjGkXri7it5FbebW5usLw/nPmCMs5DeZ7eziSYZhSmPRn0txqeW4LnAmQQU7FgqLpsEFKM4A==",
++      "license": "MIT",
++      "dependencies": {
++        "call-bound": "^1.0.3",
++        "has-tostringtag": "^1.0.2"
++      },
++      "engines": {
++        "node": ">= 0.4"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/ljharb"
++      }
++    },
++    "node_modules/is-callable": {
++      "version": "1.2.7",
++      "resolved": "https://registry.npmjs.org/is-callable/-/is-callable-1.2.7.tgz",
++      "integrity": "sha512-1BC0BVFhS/p0qtw6enp8e+8OD0UrK0oFLztSjNzhcKA3WDuJxxAPXzPuPtKkjEY9UUoEWlX/8fgKeu2S8i9JTA==",
++      "license": "MIT",
++      "engines": {
++        "node": ">= 0.4"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/ljharb"
++      }
++    },
++    "node_modules/is-date-object": {
++      "version": "1.1.0",
++      "resolved": "https://registry.npmjs.org/is-date-object/-/is-date-object-1.1.0.tgz",
++      "integrity": "sha512-PwwhEakHVKTdRNVOw+/Gyh0+MzlCl4R6qKvkhuvLtPMggI1WAHt9sOwZxQLSGpUaDnrdyDsomoRgNnCfKNSXXg==",
++      "license": "MIT",
++      "dependencies": {
++        "call-bound": "^1.0.2",
++        "has-tostringtag": "^1.0.2"
++      },
++      "engines": {
++        "node": ">= 0.4"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/ljharb"
++      }
++    },
++    "node_modules/is-map": {
++      "version": "2.0.3",
++      "resolved": "https://registry.npmjs.org/is-map/-/is-map-2.0.3.tgz",
++      "integrity": "sha512-1Qed0/Hr2m+YqxnM09CjA2d/i6YZNfF6R2oRAOj36eUdS6qIV/huPJNSEpKbupewFs+ZsJlxsjjPbc0/afW6Lw==",
++      "license": "MIT",
++      "engines": {
++        "node": ">= 0.4"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/ljharb"
++      }
++    },
++    "node_modules/is-number-object": {
++      "version": "1.1.1",
++      "resolved": "https://registry.npmjs.org/is-number-object/-/is-number-object-1.1.1.tgz",
++      "integrity": "sha512-lZhclumE1G6VYD8VHe35wFaIif+CTy5SJIi5+3y4psDgWu4wPDoBhF8NxUOinEc7pHgiTsT6MaBb92rKhhD+Xw==",
++      "license": "MIT",
++      "dependencies": {
++        "call-bound": "^1.0.3",
++        "has-tostringtag": "^1.0.2"
++      },
++      "engines": {
++        "node": ">= 0.4"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/ljharb"
++      }
++    },
++    "node_modules/is-regex": {
++      "version": "1.2.1",
++      "resolved": "https://registry.npmjs.org/is-regex/-/is-regex-1.2.1.tgz",
++      "integrity": "sha512-MjYsKHO5O7mCsmRGxWcLWheFqN9DJ/2TmngvjKXihe6efViPqc274+Fx/4fYj/r03+ESvBdTXK0V6tA3rgez1g==",
++      "license": "MIT",
++      "dependencies": {
++        "call-bound": "^1.0.2",
++        "gopd": "^1.2.0",
++        "has-tostringtag": "^1.0.2",
++        "hasown": "^2.0.2"
++      },
++      "engines": {
++        "node": ">= 0.4"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/ljharb"
++      }
++    },
++    "node_modules/is-set": {
++      "version": "2.0.3",
++      "resolved": "https://registry.npmjs.org/is-set/-/is-set-2.0.3.tgz",
++      "integrity": "sha512-iPAjerrse27/ygGLxw+EBR9agv9Y6uLeYVJMu+QNCoouJ1/1ri0mGrcWpfCqFZuzzx3WjtwxG098X+n4OuRkPg==",
++      "license": "MIT",
++      "engines": {
++        "node": ">= 0.4"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/ljharb"
++      }
++    },
++    "node_modules/is-shared-array-buffer": {
++      "version": "1.0.4",
++      "resolved": "https://registry.npmjs.org/is-shared-array-buffer/-/is-shared-array-buffer-1.0.4.tgz",
++      "integrity": "sha512-ISWac8drv4ZGfwKl5slpHG9OwPNty4jOWPRIhBpxOoD+hqITiwuipOQ2bNthAzwA3B4fIjO4Nln74N0S9byq8A==",
++      "license": "MIT",
++      "dependencies": {
++        "call-bound": "^1.0.3"
++      },
++      "engines": {
++        "node": ">= 0.4"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/ljharb"
++      }
++    },
++    "node_modules/is-string": {
++      "version": "1.1.1",
++      "resolved": "https://registry.npmjs.org/is-string/-/is-string-1.1.1.tgz",
++      "integrity": "sha512-BtEeSsoaQjlSPBemMQIrY1MY0uM6vnS1g5fmufYOtnxLGUZM2178PKbhsk7Ffv58IX+ZtcvoGwccYsh0PglkAA==",
++      "license": "MIT",
++      "dependencies": {
++        "call-bound": "^1.0.3",
++        "has-tostringtag": "^1.0.2"
++      },
++      "engines": {
++        "node": ">= 0.4"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/ljharb"
++      }
++    },
++    "node_modules/is-symbol": {
++      "version": "1.1.1",
++      "resolved": "https://registry.npmjs.org/is-symbol/-/is-symbol-1.1.1.tgz",
++      "integrity": "sha512-9gGx6GTtCQM73BgmHQXfDmLtfjjTUDSyoxTCbp5WtoixAhfgsDirWIcVQ/IHpvI5Vgd5i/J5F7B9cN/WlVbC/w==",
++      "license": "MIT",
++      "dependencies": {
++        "call-bound": "^1.0.2",
++        "has-symbols": "^1.1.0",
++        "safe-regex-test": "^1.1.0"
++      },
++      "engines": {
++        "node": ">= 0.4"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/ljharb"
++      }
++    },
++    "node_modules/is-weakmap": {
++      "version": "2.0.2",
++      "resolved": "https://registry.npmjs.org/is-weakmap/-/is-weakmap-2.0.2.tgz",
++      "integrity": "sha512-K5pXYOm9wqY1RgjpL3YTkF39tni1XajUIkawTLUo9EZEVUFga5gSQJF8nNS7ZwJQ02y+1YCNYcMh+HIf1ZqE+w==",
++      "license": "MIT",
++      "engines": {
++        "node": ">= 0.4"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/ljharb"
++      }
++    },
++    "node_modules/is-weakset": {
++      "version": "2.0.4",
++      "resolved": "https://registry.npmjs.org/is-weakset/-/is-weakset-2.0.4.tgz",
++      "integrity": "sha512-mfcwb6IzQyOKTs84CQMrOwW4gQcaTOAWJ0zzJCl2WSPDrWk/OzDaImWFH3djXhb24g4eudZfLRozAvPGw4d9hQ==",
++      "license": "MIT",
++      "dependencies": {
++        "call-bound": "^1.0.3",
++        "get-intrinsic": "^1.2.6"
++      },
++      "engines": {
++        "node": ">= 0.4"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/ljharb"
++      }
++    },
+     "node_modules/isarray": {
+       "version": "1.0.0",
+       "resolved": "https://registry.npmjs.org/isarray/-/isarray-1.0.0.tgz",
+       "integrity": "sha512-VLghIWNM6ELQzo7zwmcg0NmTVyWKYjvIeM83yjp0wRDTmUnrM678fQbcKBo6n2CJEF0szoG//ytg+TKla89ALQ=="
++    },
++    "node_modules/jpeg-exif": {
++      "version": "1.1.4",
++      "resolved": "https://registry.npmjs.org/jpeg-exif/-/jpeg-exif-1.1.4.tgz",
++      "integrity": "sha512-a+bKEcCjtuW5WTdgeXFzswSrdqi0jk4XlEtZlx5A94wCoBpFjfFTbo/Tra5SpNCl/YFZPvcV1dJc+TAYeg6ROQ==",
++      "deprecated": "Package no longer supported. Contact Support at https://www.npmjs.com/support for more info.",
++      "license": "MIT"
++    },
++    "node_modules/linebreak": {
++      "version": "1.1.0",
++      "resolved": "https://registry.npmjs.org/linebreak/-/linebreak-1.1.0.tgz",
++      "integrity": "sha512-MHp03UImeVhB7XZtjd0E4n6+3xr5Dq/9xI/5FptGk5FrbDR3zagPa2DS6U8ks/3HjbKWG9Q1M2ufOzxV2qLYSQ==",
++      "license": "MIT",
++      "dependencies": {
++        "base64-js": "0.0.8",
++        "unicode-trie": "^2.0.0"
++      }
++    },
++    "node_modules/linebreak/node_modules/base64-js": {
++      "version": "0.0.8",
++      "resolved": "https://registry.npmjs.org/base64-js/-/base64-js-0.0.8.tgz",
++      "integrity": "sha512-3XSA2cR/h/73EzlXXdU6YNycmYI7+kicTxks4eJg2g39biHR84slg2+des+p7iHYhbRg/udIS4TD53WabcOUkw==",
++      "license": "MIT",
++      "engines": {
++        "node": ">= 0.4"
++      }
+     },
+     "node_modules/math-intrinsics": {
+       "version": "1.1.0",
+@@ -595,6 +1158,51 @@
+         "url": "https://github.com/sponsors/ljharb"
+       }
+     },
++    "node_modules/object-is": {
++      "version": "1.1.6",
++      "resolved": "https://registry.npmjs.org/object-is/-/object-is-1.1.6.tgz",
++      "integrity": "sha512-F8cZ+KfGlSGi09lJT7/Nd6KJZ9ygtvYC0/UYYLI9nmQKLMnydpB9yvbv9K1uSkEu7FU9vYPmVwLg328tX+ot3Q==",
++      "license": "MIT",
++      "dependencies": {
++        "call-bind": "^1.0.7",
++        "define-properties": "^1.2.1"
++      },
++      "engines": {
++        "node": ">= 0.4"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/ljharb"
++      }
++    },
++    "node_modules/object-keys": {
++      "version": "1.1.1",
++      "resolved": "https://registry.npmjs.org/object-keys/-/object-keys-1.1.1.tgz",
++      "integrity": "sha512-NuAESUOUMrlIXOfHKzD6bpPu3tYt3xvjNdRIQ+FeT0lNb4K8WR70CaDxhuNguS2XG+GjkyMwOzsN5ZktImfhLA==",
++      "license": "MIT",
++      "engines": {
++        "node": ">= 0.4"
++      }
++    },
++    "node_modules/object.assign": {
++      "version": "4.1.7",
++      "resolved": "https://registry.npmjs.org/object.assign/-/object.assign-4.1.7.tgz",
++      "integrity": "sha512-nK28WOo+QIjBkDduTINE4JkF/UJJKyf2EJxvJKfblDpyg0Q+pkOHNTL0Qwy6NP6FhE/EnzV73BxxqcJaXY9anw==",
++      "license": "MIT",
++      "dependencies": {
++        "call-bind": "^1.0.8",
++        "call-bound": "^1.0.3",
++        "define-properties": "^1.2.1",
++        "es-object-atoms": "^1.0.0",
++        "has-symbols": "^1.1.0",
++        "object-keys": "^1.1.1"
++      },
++      "engines": {
++        "node": ">= 0.4"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/ljharb"
++      }
++    },
+     "node_modules/on-finished": {
+       "version": "2.4.1",
+       "resolved": "https://registry.npmjs.org/on-finished/-/on-finished-2.4.1.tgz",
+@@ -606,6 +1214,12 @@
+         "node": ">= 0.8"
+       }
+     },
++    "node_modules/pako": {
++      "version": "1.0.11",
++      "resolved": "https://registry.npmjs.org/pako/-/pako-1.0.11.tgz",
++      "integrity": "sha512-4hLB8Py4zZce5s4yd9XzopqwVv/yGNhV1Bl8NTmCq1763HeK2+EwVTv+leGeL13Dnh2wfbqowVPXCIO0z4taYw==",
++      "license": "(MIT AND Zlib)"
++    },
+     "node_modules/parseurl": {
+       "version": "1.3.3",
+       "resolved": "https://registry.npmjs.org/parseurl/-/parseurl-1.3.3.tgz",
+@@ -618,6 +1232,36 @@
+       "version": "0.1.13",
+       "resolved": "https://registry.npmjs.org/path-to-regexp/-/path-to-regexp-0.1.13.tgz",
+       "integrity": "sha512-A/AGNMFN3c8bOlvV9RreMdrv7jsmF9XIfDeCd87+I8RNg6s78BhJxMu69NEMHBSJFxKidViTEdruRwEk/WIKqA=="
++    },
++    "node_modules/pdfkit": {
++      "version": "0.15.2",
++      "resolved": "https://registry.npmjs.org/pdfkit/-/pdfkit-0.15.2.tgz",
++      "integrity": "sha512-s3GjpdBFSCaeDSX/v73MI5UsPqH1kjKut2AXCgxQ5OH10lPVOu5q5vLAG0OCpz/EYqKsTSw1WHpENqMvp43RKg==",
++      "license": "MIT",
++      "dependencies": {
++        "crypto-js": "^4.2.0",
++        "fontkit": "^1.8.1",
++        "jpeg-exif": "^1.1.4",
++        "linebreak": "^1.0.2",
++        "png-js": "^1.0.0"
++      }
++    },
++    "node_modules/png-js": {
++      "version": "1.1.0",
++      "resolved": "https://registry.npmjs.org/png-js/-/png-js-1.1.0.tgz",
++      "integrity": "sha512-PM/uYGzGdNSzqeOgly68+6wKQDL1SY0a/N+OEa/+br6LnHWOAJB0Npiamnodfq3jd2LS/i2fMeOKSAILjA+m5Q==",
++      "dependencies": {
++        "browserify-zlib": "^0.2.0"
++      }
++    },
++    "node_modules/possible-typed-array-names": {
++      "version": "1.1.0",
++      "resolved": "https://registry.npmjs.org/possible-typed-array-names/-/possible-typed-array-names-1.1.0.tgz",
++      "integrity": "sha512-/+5VFTchJDoVj3bhoqi6UeymcD00DAwb1nJwamzPvHEszJ4FpF6SNNbUbOS8yI56qHzdV8eK0qEfOSiodkTdxg==",
++      "license": "MIT",
++      "engines": {
++        "node": ">= 0.4"
++      }
+     },
+     "node_modules/process-nextick-args": {
+       "version": "2.0.1",
+@@ -691,6 +1335,32 @@
+       "version": "5.1.2",
+       "resolved": "https://registry.npmjs.org/safe-buffer/-/safe-buffer-5.1.2.tgz",
+       "integrity": "sha512-Gd2UZBJDkXlY7GbJxfsE8/nvKkUEU1G38c1siN6QP6a9PT9MmHB8GnpscSmMJSoF8LOIrt8ud/wPtojys4G6+g=="
++    },
++    "node_modules/regexp.prototype.flags": {
++      "version": "1.5.4",
++      "resolved": "https://registry.npmjs.org/regexp.prototype.flags/-/regexp.prototype.flags-1.5.4.tgz",
++      "integrity": "sha512-dYqgNSZbDwkaJ2ceRd9ojCGjBq+mOm9LmtXnAnEGyHhN/5R7iDW2TRw3h+o/jCFxus3P2LfWIIiwowAjANm7IA==",
++      "license": "MIT",
++      "dependencies": {
++        "call-bind": "^1.0.8",
++        "define-properties": "^1.2.1",
++        "es-errors": "^1.3.0",
++        "get-proto": "^1.0.1",
++        "gopd": "^1.2.0",
++        "set-function-name": "^2.0.2"
++      },
++      "engines": {
++        "node": ">= 0.4"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/ljharb"
++      }
++    },
++    "node_modules/restructure": {
++      "version": "2.0.1",
++      "resolved": "https://registry.npmjs.org/restructure/-/restructure-2.0.1.tgz",
++      "integrity": "sha512-e0dOpjm5DseomnXx2M5lpdZ5zoHqF1+bqdMJUohoYVVQa7cBdnk7fdmeI6byNWP/kiME72EeTiSypTCVnpLiDg==",
++      "license": "MIT"
+     },
+     "node_modules/safe-buffer": {
+       "version": "5.2.1",
+@@ -711,6 +1381,23 @@
+         }
+       ]
+     },
++    "node_modules/safe-regex-test": {
++      "version": "1.1.0",
++      "resolved": "https://registry.npmjs.org/safe-regex-test/-/safe-regex-test-1.1.0.tgz",
++      "integrity": "sha512-x/+Cz4YrimQxQccJf5mKEbIa1NzeCRNI5Ecl/ekmlYaampdNLPalVyIcCZNNH3MvmqBugV5TMYZXv0ljslUlaw==",
++      "license": "MIT",
++      "dependencies": {
++        "call-bound": "^1.0.2",
++        "es-errors": "^1.3.0",
++        "is-regex": "^1.2.1"
++      },
++      "engines": {
++        "node": ">= 0.4"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/ljharb"
++      }
++    },
+     "node_modules/safer-buffer": {
+       "version": "2.1.2",
+       "resolved": "https://registry.npmjs.org/safer-buffer/-/safer-buffer-2.1.2.tgz",
+@@ -758,6 +1445,38 @@
+         "node": ">= 0.8.0"
+       }
+     },
++    "node_modules/set-function-length": {
++      "version": "1.2.2",
++      "resolved": "https://registry.npmjs.org/set-function-length/-/set-function-length-1.2.2.tgz",
++      "integrity": "sha512-pgRc4hJ4/sNjWCSS9AmnS40x3bNMDTknHgL5UaMBTMyJnU90EgWh1Rz+MC9eFu4BuN/UwZjKQuY/1v3rM7HMfg==",
++      "license": "MIT",
++      "dependencies": {
++        "define-data-property": "^1.1.4",
++        "es-errors": "^1.3.0",
++        "function-bind": "^1.1.2",
++        "get-intrinsic": "^1.2.4",
++        "gopd": "^1.0.1",
++        "has-property-descriptors": "^1.0.2"
++      },
++      "engines": {
++        "node": ">= 0.4"
++      }
++    },
++    "node_modules/set-function-name": {
++      "version": "2.0.2",
++      "resolved": "https://registry.npmjs.org/set-function-name/-/set-function-name-2.0.2.tgz",
++      "integrity": "sha512-7PGFlmtwsEADb0WYyvCMa1t+yke6daIG4Wirafur5kcf+MhUnPms1UeR0CKQdTZD81yESwMHbtn+TR+dMviakQ==",
++      "license": "MIT",
++      "dependencies": {
++        "define-data-property": "^1.1.4",
++        "es-errors": "^1.3.0",
++        "functions-have-names": "^1.2.3",
++        "has-property-descriptors": "^1.0.2"
++      },
++      "engines": {
++        "node": ">= 0.4"
++      }
++    },
+     "node_modules/setprototypeof": {
+       "version": "1.2.0",
+       "resolved": "https://registry.npmjs.org/setprototypeof/-/setprototypeof-1.2.0.tgz",
+@@ -839,6 +1558,19 @@
+         "node": ">= 0.8"
+       }
+     },
++    "node_modules/stop-iteration-iterator": {
++      "version": "1.1.0",
++      "resolved": "https://registry.npmjs.org/stop-iteration-iterator/-/stop-iteration-iterator-1.1.0.tgz",
++      "integrity": "sha512-eLoXW/DHyl62zxY4SCaIgnRhuMr6ri4juEYARS8E6sCEqzKpOiE521Ucofdx+KnDZl5xmvGYaaKCk5FEOxJCoQ==",
++      "license": "MIT",
++      "dependencies": {
++        "es-errors": "^1.3.0",
++        "internal-slot": "^1.1.0"
++      },
++      "engines": {
++        "node": ">= 0.4"
++      }
++    },
+     "node_modules/streamsearch": {
+       "version": "1.1.0",
+       "resolved": "https://registry.npmjs.org/streamsearch/-/streamsearch-1.1.0.tgz",
+@@ -860,6 +1592,12 @@
+       "resolved": "https://registry.npmjs.org/safe-buffer/-/safe-buffer-5.1.2.tgz",
+       "integrity": "sha512-Gd2UZBJDkXlY7GbJxfsE8/nvKkUEU1G38c1siN6QP6a9PT9MmHB8GnpscSmMJSoF8LOIrt8ud/wPtojys4G6+g=="
+     },
++    "node_modules/tiny-inflate": {
++      "version": "1.0.3",
++      "resolved": "https://registry.npmjs.org/tiny-inflate/-/tiny-inflate-1.0.3.tgz",
++      "integrity": "sha512-pkY1fj1cKHb2seWDy0B16HeWyczlJA9/WW3u3c4z/NiWDsO3DOU5D7nhTLE9CF0yXv/QZFY7sEJmj24dK+Rrqw==",
++      "license": "MIT"
++    },
+     "node_modules/toidentifier": {
+       "version": "1.0.1",
+       "resolved": "https://registry.npmjs.org/toidentifier/-/toidentifier-1.0.1.tgz",
+@@ -868,6 +1606,12 @@
+         "node": ">=0.6"
+       }
+     },
++    "node_modules/tslib": {
++      "version": "2.9.1",
++      "resolved": "https://registry.npmjs.org/tslib/-/tslib-2.9.1.tgz",
++      "integrity": "sha512-a4Ux9VKuIMHsOS7ENbEq6hK2ZGYIT27Rtl0E4eD9KqwxhKiQeMZE/9xb3IdYwWaSOyIBQLExhQgXDTYoiCxnWA==",
++      "license": "0BSD"
++    },
+     "node_modules/type-is": {
+       "version": "1.6.18",
+       "resolved": "https://registry.npmjs.org/type-is/-/type-is-1.6.18.tgz",
+@@ -885,6 +1629,32 @@
+       "resolved": "https://registry.npmjs.org/typedarray/-/typedarray-0.0.6.tgz",
+       "integrity": "sha512-/aCDEGatGvZ2BIk+HmLf4ifCJFwvKFNb9/JeZPMulfgFracn9QFcAf5GO8B/mweUjSoblS5In0cWhqpfs/5PQA=="
+     },
++    "node_modules/unicode-properties": {
++      "version": "1.4.1",
++      "resolved": "https://registry.npmjs.org/unicode-properties/-/unicode-properties-1.4.1.tgz",
++      "integrity": "sha512-CLjCCLQ6UuMxWnbIylkisbRj31qxHPAurvena/0iwSVbQ2G1VY5/HjV0IRabOEbDHlzZlRdCrD4NhB0JtU40Pg==",
++      "license": "MIT",
++      "dependencies": {
++        "base64-js": "^1.3.0",
++        "unicode-trie": "^2.0.0"
++      }
++    },
++    "node_modules/unicode-trie": {
++      "version": "2.0.0",
++      "resolved": "https://registry.npmjs.org/unicode-trie/-/unicode-trie-2.0.0.tgz",
++      "integrity": "sha512-x7bc76x0bm4prf1VLg79uhAzKw8DVboClSN5VxJuQ+LKDOVEW9CdH+VY7SP+vX7xCYQqzzgQpFqz15zeLvAtZQ==",
++      "license": "MIT",
++      "dependencies": {
++        "pako": "^0.2.5",
++        "tiny-inflate": "^1.0.0"
++      }
++    },
++    "node_modules/unicode-trie/node_modules/pako": {
++      "version": "0.2.9",
++      "resolved": "https://registry.npmjs.org/pako/-/pako-0.2.9.tgz",
++      "integrity": "sha512-NUcwaKxUxWrZLpDG+z/xZaCgQITkA/Dv4V/T6bw7VON6l1Xz/VnrBqrYjZQ12TamKHzITTfOEIYUj48y2KXImA==",
++      "license": "MIT"
++    },
+     "node_modules/unpipe": {
+       "version": "1.0.0",
+       "resolved": "https://registry.npmjs.org/unpipe/-/unpipe-1.0.0.tgz",
+@@ -914,6 +1684,64 @@
+         "node": ">= 0.8"
+       }
+     },
++    "node_modules/which-boxed-primitive": {
++      "version": "1.1.1",
++      "resolved": "https://registry.npmjs.org/which-boxed-primitive/-/which-boxed-primitive-1.1.1.tgz",
++      "integrity": "sha512-TbX3mj8n0odCBFVlY8AxkqcHASw3L60jIuF8jFP78az3C2YhmGvqbHBpAjTRH2/xqYunrJ9g1jSyjCjpoWzIAA==",
++      "license": "MIT",
++      "dependencies": {
++        "is-bigint": "^1.1.0",
++        "is-boolean-object": "^1.2.1",
++        "is-number-object": "^1.1.1",
++        "is-string": "^1.1.1",
++        "is-symbol": "^1.1.1"
++      },
++      "engines": {
++        "node": ">= 0.4"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/ljharb"
++      }
++    },
++    "node_modules/which-collection": {
++      "version": "1.0.2",
++      "resolved": "https://registry.npmjs.org/which-collection/-/which-collection-1.0.2.tgz",
++      "integrity": "sha512-K4jVyjnBdgvc86Y6BkaLZEN933SwYOuBFkdmBu9ZfkcAbdVbpITnDmjvZ/aQjRXQrv5EPkTnD1s39GiiqbngCw==",
++      "license": "MIT",
++      "dependencies": {
++        "is-map": "^2.0.3",
++        "is-set": "^2.0.3",
++        "is-weakmap": "^2.0.2",
++        "is-weakset": "^2.0.3"
++      },
++      "engines": {
++        "node": ">= 0.4"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/ljharb"
++      }
++    },
++    "node_modules/which-typed-array": {
++      "version": "1.1.24",
++      "resolved": "https://registry.npmjs.org/which-typed-array/-/which-typed-array-1.1.24.tgz",
++      "integrity": "sha512-wk4Mf4pR5mRP7eYuuTBCIQ9d0ud2Fv2jRLQpfgnRjbOxAFHmjKFValgTpitVKzJJS8ajnYQV2Du1SZ8j6b/EUQ==",
++      "license": "MIT",
++      "dependencies": {
++        "available-typed-arrays": "^1.0.7",
++        "call-bind": "^1.0.9",
++        "call-bound": "^1.0.4",
++        "for-each": "^0.3.5",
++        "get-proto": "^1.0.1",
++        "gopd": "^1.2.0",
++        "has-tostringtag": "^1.0.2"
++      },
++      "engines": {
++        "node": ">= 0.4"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/ljharb"
++      }
++    },
+     "node_modules/xtend": {
+       "version": "4.0.2",
+       "resolved": "https://registry.npmjs.org/xtend/-/xtend-4.0.2.tgz",
+--- a/package.json
++++ b/package.json
+@@ -12,6 +12,8 @@
+   "dependencies": {
+     "dotenv": "^17.4.2",
+     "express": "^4.21.2",
+-    "multer": "^1.4.5-lts.1"
++    "multer": "^1.4.5-lts.1",
++    "pdfkit": "^0.15.2",
++    "pdfkit": "^0.15.2"
+   }
+ }
+--- a/public/app.js
++++ b/public/app.js
+@@ -38,6 +38,7 @@
+     "/naver": "view-naver",
+     "/insights": "view-insights",
+     "/analysis": "view-analysis",
++    "/report": "view-report",
+     "/trends": "view-trends",
+     "/mania": "view-mania",
+     "/billing": "view-billing",
+@@ -661,6 +662,10 @@
+     document.getElementById("view-insights").classList.toggle("hidden", p !== "/insights");
+     const viewAnalysis = document.getElementById("view-analysis");
+     if (viewAnalysis) viewAnalysis.classList.toggle("hidden", p !== "/analysis");
++    const viewReport = document.getElementById("view-report");
++    if (viewReport) viewReport.classList.toggle("hidden", p !== "/report");
++    const shell = document.querySelector(".app-shell");
++    if (shell) shell.classList.toggle("report-open", p === "/report");
+     const viewTrends = document.getElementById("view-trends");
+     if (viewTrends) viewTrends.classList.toggle("hidden", p !== "/trends");
+     const viewMania = document.getElementById("view-mania");
+@@ -809,6 +814,8 @@
+       if (omnibox) omnibox.textContent = "인사이트";
+     } else if (p === "/analysis") {
+       if (omnibox) omnibox.textContent = "채널 분석";
++    } else if (p === "/report") {
++      if (omnibox) omnibox.textContent = "주간 리포트";
+     } else if (p === "/trends") {
+       if (omnibox) omnibox.textContent = "트렌드";
+     } else if (p === "/mania") {
+@@ -831,6 +838,7 @@
+     if (p === "/naver") loadNaver();
+     if (p === "/insights") renderInsights();
+     if (p === "/analysis") renderChannelAnalysis();
++    if (p === "/report") renderWeeklyReport();
+     if (p === "/trends") loadTrends();
+     if (p === "/mania") loadMania();
+     if (p === "/billing") loadBillingPage();
+@@ -2701,6 +2709,7 @@
+     renderSnsPreview();
+     loadLatestUploadLinks();
+     if (pathOf() === "/analysis") renderChannelAnalysis();
++    if (pathOf() === "/report") renderWeeklyReport();
+   }
+ 
+   function sidebarMsg(text, ok) {
+@@ -4582,6 +4591,178 @@
+     }
+   }
+ 
++  let reportDays = 7;
++  let reportSeq = 0;
++
++  function reportSvg(metric) {
++    const cells = (metric && metric.cells) || [];
++    const points = cells.filter((cell) => cell.state === "available" || cell.state === "actual_zero");
++    if (!points.length) return "<p class='ic-note'>그릴 숫자 점이 없습니다. 빈 날은 0이 아닙니다.</p>";
++    const w = 640;
++    const h = 168;
++    const vals = points.map((p) => p.value);
++    const min = Math.min.apply(null, vals);
++    const max = Math.max.apply(null, vals);
++    const pad = (max - min) * 0.18 || 1;
++    const yMin = min - pad;
++    const yMax = max + pad;
++    const span = yMax - yMin;
++    const n = cells.length;
++    const xAt = (i) => 48 + (n === 1 ? (w - 64) / 2 : (i / (n - 1)) * (w - 64));
++    const yAt = (value) => 28 + (1 - (value - yMin) / span) * 100;
++    let d = "";
++    let prev = null;
++    cells.forEach((cell, i) => {
++      if (cell.state !== "available" && cell.state !== "actual_zero") {
++        prev = null;
++        return;
++      }
++      const x = xAt(i);
++      const y = yAt(cell.value);
++      const linked = prev && prev.date && cell.date === new Date(Date.parse(prev.date + "T00:00:00Z") + 86400000).toISOString().slice(0, 10);
++      d += (linked ? " L " : " M ") + x.toFixed(1) + " " + y.toFixed(1);
++      prev = cell;
++    });
++    const dots = cells
++      .map((cell, i) => {
++        if (cell.state !== "available" && cell.state !== "actual_zero") return "";
++        return `<circle cx="${xAt(i).toFixed(1)}" cy="${yAt(cell.value).toFixed(1)}" r="3.5" fill="#355c8c"><title>${esc(cell.date)} ${esc(cell.value)} ${esc(metric.unit || "")}</title></circle>`;
++      })
++      .join("");
++    const step = n > 16 ? 4 : n > 8 ? 2 : 1;
++    const ticks = cells
++      .map((cell, i) => {
++        if (i % step !== 0 && i !== n - 1) return "";
++        return `<text x="${xAt(i).toFixed(1)}" y="148" text-anchor="middle" font-size="10" fill="#444">${esc(cell.date.slice(5))}</text>`;
++      })
++      .join("");
++    return `<svg class="report-svg" viewBox="0 0 ${w} ${h}" role="img">
++      <text x="4" y="36" font-size="11" fill="#333">${esc(max)} ${esc(metric.unit || "")}</text>
++      <text x="4" y="128" font-size="11" fill="#333">${esc(min)} ${esc(metric.unit || "")}</text>
++      <path d="${d}" fill="none" stroke="#355c8c" stroke-width="2"/>${dots}${ticks}
++      <text x="48" y="164" font-size="11" fill="#666">점 없는 눈금은 수집 없음이며 0이 아닙니다. 선은 다음 날로 이어질 때만 그립니다.</text>
++    </svg>`;
++  }
++
++  function renderWeeklyReportView(data) {
++    const view = data.presentation || { cards: [], detailChannels: [], statusRows: [], criteria: [] };
++    const banner = data.fixtureBanner ? `<div class="report-banner">${esc(data.fixtureBanner)}</div>` : "";
++    const days = (data.period && data.coverage)
++      ? enumerateClient(data.period.start, data.period.end).map((date) => {
++          const on = (data.coverage.observedDates || []).indexOf(date) >= 0;
++          return `<div class="report-day${on ? " on" : ""}">${esc(date.slice(5))}</div>`;
++        }).join("")
++      : "";
++    const cards = view.cards.length
++      ? `<div class="report-cards">${view.cards.map((card) => `<article class="report-kpi"><span>${esc(card.channel)} · ${esc(card.label)}</span><b>${esc(card.value)}</b><small>${esc(card.sub)}${card.span ? " · " + esc(card.span) : ""}</small></article>`).join("")}</div>`
++      : `<p class="report-note">이 기간에 표시할 숫자가 없습니다.</p>`;
++    const firstChart = (view.detailChannels[0] && view.detailChannels[0].shownMetrics || []).find((metric) => metric.key === "views") || (view.detailChannels[0] && view.detailChannels[0].shownMetrics[0]);
++    const overview = firstChart ? `<section class="report-panel"><h3>${esc(view.detailChannels[0].label)} ${esc(firstChart.label)}</h3>${reportSvg(firstChart)}</section>` : "";
++    const channelPills = document.getElementById("report-channels");
++    if (channelPills && channelPills.dataset.ready !== data.storeId) {
++      channelPills.dataset.ready = data.storeId;
++      channelPills.innerHTML = `<button type="button" class="report-pill active" data-report-channel="all">전체</button>` +
++        (view.detailChannels || []).map((ch) => `<button type="button" class="report-pill" data-report-channel="${esc(ch.platform)}">${esc(ch.label)}</button>`).join("");
++      channelPills.querySelectorAll("[data-report-channel]").forEach((btn) => {
++        btn.addEventListener("click", () => {
++          channelPills.querySelectorAll("[data-report-channel]").forEach((el) => el.classList.toggle("active", el === btn));
++          const id = btn.getAttribute("data-report-channel");
++          document.querySelectorAll("[data-report-detail]").forEach((el) => {
++            el.hidden = id !== "all" && el.getAttribute("data-report-detail") !== id;
++          });
++        });
++      });
++    }
++    const details = (view.detailChannels || []).map((ch) => {
++      const metrics = (ch.shownMetrics || []).map((metric) => `<h3>${esc(metric.label)} ${metric.asOf ? esc(metric.asOf.value + metric.unit) : ""}</h3><p class="report-note">${esc(metric.definition || "")}</p>${metric.customerSpan ? `<p>${esc(metric.customerSpan)}</p>` : ""}${metric.comparison && metric.comparison.eligible ? `<p>전주 ${esc(metric.comparison.text)}</p>` : ""}${reportSvg(metric)}`).join("");
++      return `<section class="report-panel" data-report-detail="${esc(ch.platform)}"><div class="ic-head"><span class="ic-name">${esc(ch.label)}</span><span>${esc(ch.account && ch.account.displayName ? ch.account.displayName : ch.status.label)}</span></div><p>${esc(ch.posts.reason)}</p>${metrics}</section>`;
++    }).join("");
++    const rows = (view.statusRows || []).map((row) => `<tr><td>${esc(row.label)}</td><td>${esc(row.note)}</td></tr>`).join("");
++    const table = rows ? `<section class="report-panel"><h3>데이터 현황</h3><table class="report-status-table"><tbody>${rows}</tbody></table></section>` : "";
++    const criteria = (view.criteria || []).map((line) => `<li>${esc(line)}</li>`).join("");
++    return `${banner}
++      <p class="report-kicker">주간 리포트</p>
++      <p class="report-period">${esc(data.storeName)}</p>
++      <p class="report-headline">${esc(data.coverage.headline || "")}</p>
++      <p class="report-meta">${esc(data.period.start)} ~ ${esc(data.period.end)} · 마지막 수집 ${esc(data.lastCollectedAtKst || "없음")} · 문서 작성 ${esc(data.generatedAtKst || "")}</p>
++      <p class="report-note">${esc(data.disclaimer || "")}</p>
++      <p class="report-note">올린 작업 ${esc(data.publishing.uploadJobs)}건 · 채널에 올린 횟수 ${esc(data.publishing.channelPublishTasks)}건</p>
++      ${cards}
++      <section class="report-panel"><h3>수집된 날</h3><div class="report-days">${days}</div></section>
++      ${overview}
++      ${details}
++      ${table}
++      <details class="report-criteria"><summary>집계 기준</summary><ul>${criteria}</ul></details>`;
++  }
++
++  function enumerateClient(start, end) {
++    const out = [];
++    const day = 86400000;
++    for (let t = Date.parse(start + "T00:00:00Z"); t <= Date.parse(end + "T00:00:00Z"); t += day) {
++      out.push(new Date(t).toISOString().slice(0, 10));
++    }
++    return out;
++  }
++
++  async function renderWeeklyReport() {
++    const seq = ++reportSeq;
++    const status = document.getElementById("report-status");
++    const body = document.getElementById("report-body");
++    const pdf = document.getElementById("report-pdf");
++    if (!body) return;
++    const client = getActiveClient();
++    if (!client) {
++      if (status) status.textContent = "가게를 선택하세요.";
++      body.innerHTML = "";
++      return;
++    }
++    const end = (document.getElementById("report-end") || {}).value || "";
++    const q = new URLSearchParams({ days: String(reportDays) });
++    if (end) q.set("end", end);
++    if (pdf) pdf.href = "/api/stores/" + encodeURIComponent(client.id) + "/weekly-report.pdf?" + q.toString();
++    if (status) status.textContent = "불러오는 중…";
++    try {
++      const res = await fetch("/api/stores/" + encodeURIComponent(client.id) + "/weekly-report?" + q.toString());
++      const data = await res.json().catch(() => ({}));
++      if (seq !== reportSeq) return;
++      if (!res.ok) throw new Error(data.error || "불러오지 못했습니다.");
++      if (status) status.textContent = client.name;
++      body.innerHTML = renderWeeklyReportView(data);
++    } catch (err) {
++      if (seq !== reportSeq) return;
++      if (status) status.textContent = (err && err.message) || "불러오지 못했습니다.";
++    }
++  }
++
++  document.querySelectorAll("[data-report-days]").forEach((btn) => {
++    btn.addEventListener("click", () => {
++      reportDays = Number(btn.getAttribute("data-report-days")) || 7;
++      document.querySelectorAll("[data-report-days]").forEach((el) => el.classList.toggle("active", el === btn));
++      renderWeeklyReport();
++    });
++  });
++  const reportEnd = document.getElementById("report-end");
++  if (reportEnd) reportEnd.addEventListener("change", renderWeeklyReport);
++  const reportMenu = document.getElementById("report-menu");
++  if (reportMenu) {
++    reportMenu.addEventListener("click", () => {
++      const shell = document.querySelector(".app-shell");
++      if (!shell) return;
++      const open = shell.classList.toggle("report-nav-open");
++      reportMenu.setAttribute("aria-expanded", open ? "true" : "false");
++    });
++    const closeReportNav = () => {
++      const shell = document.querySelector(".app-shell");
++      if (shell) shell.classList.remove("report-nav-open");
++      reportMenu.setAttribute("aria-expanded", "false");
++    };
++    document.querySelectorAll("#client-sidebar a").forEach((link) => {
++      link.addEventListener("click", closeReportNav);
++    });
++    const backdrop = document.getElementById("report-backdrop");
++    if (backdrop) backdrop.addEventListener("click", closeReportNav);
++  }
++
+   /* ---------- 트렌드 (관리자 미리보기) ---------- */
+   let trendsData = null;
+   let trendsCat = "all";
+--- a/public/index.html
++++ b/public/index.html
+@@ -125,6 +125,7 @@
+         <a href="/scheduled" data-nav="/scheduled">예약</a>
+         <a href="/insights" data-nav="/insights">조회수</a>
+         <a href="/analysis" data-nav="/analysis">채널 분석</a>
++        <a href="/report" data-nav="/report">주간 리포트</a>
+         <a href="/trends" data-nav="/trends" id="trends-nav-link" hidden>트렌드</a>
+         <a href="/mania" data-nav="/mania" id="mania-nav-link" hidden>매니아 취향</a>
+         <a href="/billing" data-nav="/billing">요금</a>
+@@ -769,6 +770,23 @@
+         <p class="sub">왼쪽에서 고른 가게에 연결된 채널만 보여 줍니다. 숫자는 인사이트 스냅샷에 있는 값만 쓰고, 없는 값은 0으로 바꾸지 않습니다.</p>
+         <p class="hint" id="analysis-status"></p>
+         <div id="analysis-body"></div>
++      </section>
++
++      <section id="view-report" class="hidden report-page">
++        <div class="report-backdrop" id="report-backdrop" hidden></div>
++        <div class="report-toolbar">
++          <button type="button" class="report-menu" id="report-menu" aria-controls="client-sidebar" aria-expanded="false">메뉴</button>
++          <input type="date" id="report-end" aria-label="종료일" />
++          <div class="report-pills" role="group" aria-label="기간">
++            <button type="button" class="report-pill active" data-report-days="7">7일</button>
++            <button type="button" class="report-pill" data-report-days="14">14일</button>
++            <button type="button" class="report-pill" data-report-days="28">28일</button>
++          </div>
++          <div class="report-pills" id="report-channels" role="group" aria-label="채널"></div>
++          <a class="report-pdf" id="report-pdf" href="#">PDF 받기</a>
++        </div>
++        <p class="hint" id="report-status"></p>
++        <div id="report-body"></div>
+       </section>
+ 
+       <section id="view-mania" class="hidden">
+--- a/public/styles.css
++++ b/public/styles.css
+@@ -2420,6 +2420,62 @@
+ .insights-store-nums span { display: block; font-size: 12px; color: var(--muted); }
+ .insights-store-nums b { font-size: 18px; }
+ .analysis-list { display: flex; flex-direction: column; gap: 12px; }
++.app-shell.report-open { grid-template-columns: 220px minmax(0, 1fr); }
++.app-shell.report-open .ad-rail { display: none; }
++.app-shell.report-open .main { background: #f3f5f8; padding: 18px 24px 64px; min-width: 0; }
++.report-menu { display: none; }
++.report-backdrop { display: none; position: fixed; inset: 0; background: rgba(16,24,40,.35); z-index: 30; }
++.report-page { max-width: 1100px; }
++.report-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 14px; }
++.report-toolbar input[type="date"] { width: auto; border-radius: 999px; padding: 8px 12px; background: #fff; }
++.report-pills { display: flex; gap: 6px; flex-wrap: wrap; }
++.report-pill, .report-pdf {
++  border: 0; border-radius: 999px; background: #fff; color: var(--text);
++  padding: 8px 14px; font-weight: 700; font-size: 14px; text-decoration: none; cursor: pointer;
++}
++.report-pill.active, .report-pdf { background: var(--blue); color: #fff; }
++.report-banner { background: #fff6df; border-radius: 14px; padding: 10px 14px; margin-bottom: 14px; color: #7a5b12; font-size: 13px; }
++.report-kicker { margin: 0; color: var(--muted); font-size: 13px; }
++.report-period { margin: 2px 0 6px; font-size: 28px; font-weight: 800; letter-spacing: -0.03em; }
++.report-headline { display: inline-block; margin: 0 0 8px; padding: 6px 10px; border-radius: 999px; background: var(--blue-soft); color: var(--blue); font-weight: 700; }
++.report-meta, .report-note { color: var(--muted); font-size: 13px; margin: 4px 0; }
++.report-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 16px 0; }
++.report-kpi { background: #fff; border-radius: 18px; padding: 16px 18px 14px; box-shadow: 0 1px 0 rgba(16,24,40,.04); }
++.report-kpi span { display: block; color: var(--muted); font-size: 13px; }
++.report-kpi b { display: block; margin-top: 6px; font-size: 34px; line-height: 1.1; letter-spacing: -0.03em; white-space: nowrap; }
++.report-kpi small { display: block; margin-top: 6px; color: var(--muted); font-size: 12px; }
++.report-panel { background: #fff; border-radius: 18px; padding: 16px 18px 12px; margin: 12px 0; }
++.report-panel h3 { margin: 0 0 8px; font-size: 16px; }
++.report-days { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
++.report-day { text-align: center; border-radius: 12px; padding: 8px 0; background: #eef1f4; color: var(--muted); font-size: 12px; }
++.report-day.on { background: var(--blue-soft); color: var(--blue); font-weight: 700; }
++.report-svg { width: 100%; height: 220px; }
++.report-status-table { width: 100%; border-collapse: collapse; }
++.report-status-table td { padding: 12px 4px; border-top: 1px solid var(--line); }
++.report-criteria { margin-top: 8px; color: var(--muted); font-size: 13px; }
++.report-criteria summary { cursor: pointer; font-weight: 700; color: var(--text); }
++@media (max-width: 860px) {
++  .app-shell.report-open { grid-template-columns: minmax(0, 1fr); }
++  .app-shell.report-open .side {
++    position: fixed; z-index: 40; top: 0; left: 0; width: min(280px, 88vw);
++    transform: translateX(-105%); transition: transform .2s ease;
++    min-height: 100vh; max-height: 100vh; box-shadow: none;
++  }
++  .app-shell.report-open.report-nav-open .side { transform: none; }
++  .app-shell.report-open.report-nav-open .report-backdrop { display: block; }
++  .report-menu { display: inline-flex; align-items: center; }
++  .app-shell.report-open .main { padding: 12px 12px 48px; }
++  .report-page { max-width: none; }
++  .report-cards { grid-template-columns: 1fr 1fr; gap: 8px; }
++  .report-kpi { padding: 12px 10px; }
++  .report-kpi b { font-size: 26px; }
++  .report-period { font-size: 24px; }
++  .report-days { grid-template-columns: repeat(7, minmax(0, 1fr)); }
++  .report-svg { height: 200px; }
++}
++.report-toolbar input[type="date"] { width: auto; }
++.report-banner { border: 1px solid #ead9b0; background: #fff8e8; padding: 10px 12px; margin-bottom: 12px; font-size: 13px; }
++.report-svg { width: 100%; height: 180px; background: #fff; border: 1px solid var(--line); }
+ .analysis-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+ .analysis-table th, .analysis-table td { text-align: left; padding: 6px 4px; border-bottom: 1px solid var(--line); vertical-align: top; }
+ .analysis-table th { color: var(--muted); font-size: 12px; font-weight: 600; }
+--- a/server.js
++++ b/server.js
+@@ -3596,7 +3596,6 @@
+   }
+ });
+ 
+-
+ // ---- 트렌드 (관리자 미리보기) ----
+ const trends = require("./lib/trends");
+ app.get("/api/trends", (req, res) => {
+@@ -3616,6 +3615,52 @@
+     res.json({ ok: true, result });
+   } catch (err) {
+     res.status(500).json({ error: "새로 불러오지 못했습니다." });
++  }
++});
++
++const weeklyReport = require("./lib/weekly-report");
++const weeklyPdf = require("./lib/weekly-report-pdf");
++
++function buildWeeklyForSession(sessionEmail, client, query) {
++  return weeklyReport.buildWeeklyReport({
++    email: sessionEmail,
++    client,
++    end: query && query.end,
++    days: query && query.days,
++    snapshots: weeklyReport.readSnapshotFile(),
++    connections: channelAnalysis.readConnections(sessionEmail, client.id),
++    jobs: store.getJobs(),
++  });
++}
++
++app.get("/api/stores/:storeId/weekly-report", (req, res) => {
++  const result = weeklyReport.weeklyReportHttpResult({
++    sessionEmail: req.user && req.user.email,
++    storeId: String(req.params.storeId || ""),
++    getClient: clientStore.getClient,
++    query: req.query,
++    build: ({ email, client, end, days }) => buildWeeklyForSession(email, client, { end, days }),
++  });
++  res.status(result.status).json(result.body);
++});
++
++app.get("/api/stores/:storeId/weekly-report.pdf", async (req, res) => {
++  const result = weeklyReport.weeklyReportHttpResult({
++    sessionEmail: req.user && req.user.email,
++    storeId: String(req.params.storeId || ""),
++    getClient: clientStore.getClient,
++    query: req.query,
++    build: ({ email, client, end, days }) => buildWeeklyForSession(email, client, { end, days }),
++  });
++  if (result.status !== 200) return res.status(result.status).json(result.body);
++  try {
++    const pdf = await weeklyPdf.renderWeeklyReportPdf(result.body);
++    res.setHeader("Content-Type", "application/pdf");
++    res.setHeader("Content-Disposition", "attachment; filename=\"onepost-weekly-report.pdf\"");
++    res.send(pdf);
++  } catch (err) {
++    const status = err && err.code === "FONT_MISSING" ? 503 : 500;
++    res.status(status).json({ error: err && err.message ? err.message : "PDF를 만들지 못했습니다." });
+   }
+ });
+ 
+--- a/test/report-layout.test.js
++++ b/test/report-layout.test.js
+@@ -0,0 +1,74 @@
++const fs = require("fs");
++const test = require("node:test");
++const assert = require("node:assert/strict");
++
++test("report route keeps the sidebar off the mobile canvas", async (t) => {
++  let puppeteer;
++  try {
++    puppeteer = require("puppeteer-core");
++  } catch {
++    return t.skip("puppeteer-core is not installed");
++  }
++  if (!fs.existsSync("/usr/bin/google-chrome")) return t.skip("google-chrome is not installed");
++  let browser;
++  try {
++    browser = await puppeteer.launch({
++      executablePath: "/usr/bin/google-chrome",
++      headless: true,
++      args: ["--no-sandbox", "--disable-dev-shm-usage"],
++    });
++    for (const width of [390, 360]) {
++      const page = await browser.newPage();
++      await page.setViewport({ width, height: 900, deviceScaleFactor: 1 });
++      const response = await page.goto("http://127.0.0.1:3020/report", { waitUntil: "networkidle0", timeout: 15000 });
++      if (!response || !response.ok()) {
++        await page.close();
++        return t.skip("report preview server is not running");
++      }
++      await page.waitForSelector(".report-kpi b");
++      const box = await page.evaluate(() => {
++        const side = document.querySelector(".side").getBoundingClientRect();
++        const main = document.querySelector(".main").getBoundingClientRect();
++        const cards = [...document.querySelectorAll(".report-kpi b")].map((el) => ({
++          text: el.textContent.replace(/\s+/g, ""),
++          lines: el.getClientRects().length,
++          clipped: el.scrollWidth > el.clientWidth + 1,
++        }));
++        return {
++          scrollWidth: document.documentElement.scrollWidth,
++          innerWidth: window.innerWidth,
++          sideRight: side.right,
++          mainWidth: main.width,
++          cards,
++        };
++      });
++      assert.ok(box.scrollWidth <= box.innerWidth + 1, `${width} scroll ${box.scrollWidth} > ${box.innerWidth}`);
++      assert.ok(box.sideRight <= 1, `${width} sidebar still on screen ${box.sideRight}`);
++      assert.ok(box.mainWidth >= box.innerWidth - 1, `${width} main ${box.mainWidth} viewport ${box.innerWidth}`);
++      for (const card of box.cards) {
++        assert.equal(card.lines, 1, card.text);
++        assert.equal(card.clipped, false, card.text);
++      }
++      assert.ok(box.cards.some((card) => card.text === "140회"));
++      assert.ok(box.cards.some((card) => card.text === "12명"));
++      await page.close();
++    }
++    const desktop = await browser.newPage();
++    await desktop.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
++    await desktop.goto("http://127.0.0.1:3020/report", { waitUntil: "networkidle0" });
++    const wide = await desktop.evaluate(() => {
++      const side = document.querySelector(".side").getBoundingClientRect();
++      return {
++        scrollWidth: document.documentElement.scrollWidth,
++        innerWidth: window.innerWidth,
++        sideRight: side.right,
++        sideWidth: side.width,
++      };
++    });
++    assert.ok(wide.sideRight > 100, "desktop sidebar should stay available");
++    assert.ok(wide.scrollWidth <= wide.innerWidth + 1);
++    await desktop.close();
++  } finally {
++    if (browser) await browser.close();
++  }
++});
+--- a/test/weekly-report.test.js
++++ b/test/weekly-report.test.js
+@@ -0,0 +1,307 @@
++const fs = require("fs");
++const os = require("os");
++const path = require("path");
++const test = require("node:test");
++const assert = require("node:assert/strict");
++const { execFileSync } = require("child_process");
++
++const {
++  DISCLAIMER,
++  buildWeeklyReport,
++  weeklyReportHttpResult,
++} = require("../lib/weekly-report");
++const { renderWeeklyReportPdf } = require("../lib/weekly-report-pdf");
++
++const EMAIL = "owner-a@example.test";
++const OTHER = "owner-b@example.test";
++
++function atOnKst(date) {
++  return new Date(Date.parse(`${date}T00:21:00+09:00`)).toISOString();
++}
++
++function yt(date, views, followers, extra) {
++  return {
++    email: EMAIL,
++    clientId: "store-shape",
++    platform: "youtube",
++    account: "합성채널",
++    at: atOnKst(date),
++    views,
++    followers,
++    videos: 3,
++    ...extra,
++  };
++}
++
++test("short observations are not a 7-day delta and ambiguous zero is not confirmed", () => {
++  const snapshots = {
++    version: 1,
++    lastRunAt: "2026-11-05T15:21:01.000Z",
++    days: {
++      "2026-11-04": {
++        [`${EMAIL}|store-shape|youtube`]: yt("2026-11-04", 100, 0),
++        [`${OTHER}|store-other|youtube`]: yt("2026-11-04", 99991, 8, { email: OTHER, clientId: "store-other", account: "OTHER-SECRET" }),
++      },
++      "2026-11-05": {
++        [`${EMAIL}|store-shape|youtube`]: yt("2026-11-05", null, 4),
++      },
++      "2026-11-06": {
++        [`${EMAIL}|store-shape|youtube`]: yt("2026-11-06", 140, 12),
++      },
++    },
++  };
++  const report = buildWeeklyReport({
++    email: EMAIL,
++    client: { id: "store-shape", name: "합성가게" },
++    snapshots,
++    connections: { youtube: { hasToken: true, account: { displayName: "합성채널", id: "yt-synthetic" } } },
++    jobs: [
++      {
++        id: "job-1",
++        clientId: "store-shape",
++        userEmail: EMAIL,
++        mediaType: "video",
++        files: [{ originalName: "clip.mp4" }],
++        createdAt: "2026-11-05T03:00:00.000Z",
++        tasks: [{ channel: "youtube" }, { channel: "tiktok" }],
++      },
++      {
++        id: "job-other",
++        clientId: "store-other",
++        userEmail: OTHER,
++        mediaType: "video",
++        files: [{ originalName: "clip.mp4" }],
++        createdAt: "2026-11-05T03:00:00.000Z",
++        tasks: [{ channel: "youtube" }],
++      },
++    ],
++    end: "2026-11-06",
++    days: 7,
++    generatedAt: "2026-11-06T05:20:00.000Z",
++  });
++  const blob = JSON.stringify(report);
++  assert.equal(blob.includes("OTHER-SECRET"), false);
++  assert.equal(blob.includes("99991"), false);
++  assert.equal(report.coverage.observedDates.join(","), "2026-11-04,2026-11-05,2026-11-06");
++  assert.equal(report.coverage.missingDates.includes("2026-10-31"), true);
++  assert.equal(report.coverage.missingDates.length, 4);
++  assert.equal(report.coverage.sevenDayDeltaEligible, false);
++  assert.equal(report.coverage.priorWeekEligible, false);
++  assert.equal(report.disclaimer, DISCLAIMER);
++  const views = report.channels.find((ch) => ch.platform === "youtube").metrics.find((m) => m.key === "views");
++  assert.deepEqual(views.series.map((p) => p.date), ["2026-11-04", "2026-11-06"]);
++  assert.equal(views.series[1].gapBefore, true);
++  assert.equal(views.series.some((p) => p.date === "2026-11-05"), false);
++  assert.equal(views.observedSpan.eligible, true);
++  assert.equal(views.observedSpan.difference, 40);
++  assert.equal(views.observedSpan.spanDays, 2);
++  assert.equal(views.windowBoundaryDelta.eligible, false);
++  assert.equal(views.comparison.eligible, false);
++  assert.equal(JSON.stringify(views.comparison).includes("%"), false);
++  const followers = report.channels.find((ch) => ch.platform === "youtube").metrics.find((m) => m.key === "followers");
++  assert.equal(followers.cells.find((c) => c.date === "2026-11-04").state, "ambiguous_zero");
++  assert.equal(followers.series.some((p) => p.value === 0), false);
++  assert.equal(report.publishing.uploadJobs, 1);
++  assert.equal(report.publishing.channelPublishTasks, 2);
++  assert.equal(report.publishing.singleVideoUploads, 1);
++  assert.equal(report.publishing.identity.includes("구분하지 못했습니다"), true);
++  assert.equal(report.channels.find((ch) => ch.platform === "youtube").posts.available, false);
++  assert.equal(report.viewSums.length, 0);
++});
++
++test("confirmed prior zero is shown as 0 to N and full-week boundaries can qualify", () => {
++  const days = {};
++  function put(date, views) {
++    days[date] = {
++      [`${EMAIL}|store-full|youtube`]: {
++        email: EMAIL,
++        clientId: "store-full",
++        platform: "youtube",
++        at: atOnKst(date),
++        views,
++        followers: 5,
++        videos: 1,
++      },
++    };
++  }
++  put("2026-11-01", 10);
++  put("2026-11-07", 10);
++  put("2026-11-08", 10);
++  put("2026-11-14", 15);
++  const report = buildWeeklyReport({
++    email: EMAIL,
++    client: { id: "store-full", name: "합성완전주" },
++    snapshots: { version: 1, days },
++    connections: { youtube: { hasToken: true, account: { displayName: "합성완전", id: "yt-full" } } },
++    jobs: [],
++    end: "2026-11-14",
++    days: 7,
++    fixtureBanner: "합성 예시. 운영 스냅샷이 아닙니다.",
++  });
++  const views = report.channels.find((ch) => ch.platform === "youtube").metrics.find((m) => m.key === "views");
++  assert.equal(views.windowBoundaryDelta.eligible, true);
++  assert.equal(views.windowBoundaryDelta.difference, 5);
++  assert.equal(views.comparison.eligible, true);
++  assert.equal(views.comparison.text, "0 -> 5");
++  assert.equal(views.comparison.percent, null);
++  assert.equal(report.coverage.sevenDayDeltaEligible, true);
++  assert.equal(report.fixtureBanner.includes("합성"), true);
++  const after = "2026-11-06T04:28:00.000Z";
++  const before = "2026-11-06T04:27:49.000Z";
++  function zeroReport(at, flag) {
++    return buildWeeklyReport({
++      email: EMAIL,
++      client: { id: "store-full", name: "합성완전주" },
++      snapshots: {
++        version: 1,
++        days: {
++          "2026-11-14": {
++            [`${EMAIL}|store-full|youtube`]: {
++              email: EMAIL,
++              clientId: "store-full",
++              platform: "youtube",
++              at,
++              views: 0,
++              followers: 0,
++              videos: 1,
++              zeroConfirmed: flag,
++            },
++          },
++        },
++      },
++      connections: { youtube: { hasToken: true, account: { displayName: "합성완전", id: "yt-full" } } },
++      jobs: [],
++      end: "2026-11-14",
++      days: 7,
++    });
++  }
++  const later = zeroReport(after, false);
++  const earlier = zeroReport(before, true);
++  const viewsLater = later.channels.find((ch) => ch.platform === "youtube").metrics.find((m) => m.key === "views");
++  const viewsEarlier = earlier.channels.find((ch) => ch.platform === "youtube").metrics.find((m) => m.key === "views");
++  assert.equal(viewsLater.cells.find((c) => c.date === "2026-11-14").state, "actual_zero");
++  assert.equal(viewsEarlier.cells.find((c) => c.date === "2026-11-14").state, "ambiguous_zero");
++  assert.equal(later.lastCollectedAtKst.includes("한국시간"), true);
++  assert.equal(later.lastCollectedAtKst.includes("Z"), false);
++});
++
++test("session store boundary and date query", () => {
++  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "weekly-clients-"));
++  const root = path.join(__dirname, "..");
++  const dataDir = path.join(root, "data");
++  fs.mkdirSync(dataDir, { recursive: true });
++  fs.writeFileSync(
++    path.join(dataDir, "clients.json"),
++    JSON.stringify({
++      byUser: {
++        [EMAIL]: { clients: [{ id: "store-shape", name: "합성가게" }] },
++        [OTHER]: { clients: [{ id: "store-other", name: "다른가게" }] },
++      },
++    })
++  );
++  const clientStore = require("../lib/client-store");
++  const denied = weeklyReportHttpResult({
++    sessionEmail: EMAIL,
++    storeId: "store-other",
++    getClient: clientStore.getClient,
++    query: { days: "7", end: "2026-11-06" },
++    build: () => {
++      throw new Error("foreign store");
++    },
++  });
++  assert.equal(denied.status, 404);
++  const anon = weeklyReportHttpResult({
++    sessionEmail: "",
++    storeId: "store-shape",
++    getClient: clientStore.getClient,
++    query: {},
++    build: () => {
++      throw new Error("anon");
++    },
++  });
++  assert.equal(anon.status, 401);
++  const bad = weeklyReportHttpResult({
++    sessionEmail: EMAIL,
++    storeId: "store-shape",
++    getClient: clientStore.getClient,
++    query: { end: "11-06", days: "7" },
++    build: () => {
++      throw new Error("bad date");
++    },
++  });
++  assert.equal(bad.status, 400);
++  assert.equal(fs.existsSync(dir), true);
++});
++
++test("pdf contains every channel, the disclaimer, and more than one page", async () => {
++  const report = buildWeeklyReport({
++    email: EMAIL,
++    client: { id: "store-shape", name: "합성가게" },
++    snapshots: {
++      version: 1,
++      lastRunAt: "2026-11-05T15:21:01.000Z",
++      days: {
++        "2026-11-04": { [`${EMAIL}|store-shape|youtube`]: yt("2026-11-04", 100, 0) },
++        "2026-11-05": { [`${EMAIL}|store-shape|youtube`]: yt("2026-11-05", null, 4) },
++        "2026-11-06": { [`${EMAIL}|store-shape|youtube`]: yt("2026-11-06", 140, 12) },
++      },
++    },
++    connections: {
++      youtube: { hasToken: true, account: { displayName: "합성채널", id: "yt-synthetic" } },
++      tiktok: { hasToken: true, account: { displayName: "합성틱톡", id: "tt-synthetic" } },
++    },
++    jobs: [],
++    end: "2026-11-06",
++    days: 7,
++    generatedAt: "2026-11-06T05:20:00.000Z",
++    fixtureBanner: "합성 예시. 운영 스냅샷이 아닙니다.",
++  });
++  const pdf = await renderWeeklyReportPdf(report);
++  const file = path.join(os.tmpdir(), "onepost-weekly-sample.pdf");
++  fs.writeFileSync(file, pdf);
++  const info = execFileSync("pdfinfo", [file], { encoding: "utf8" });
++  const pages = Number((info.match(/Pages:\s+(\d+)/) || [])[1]);
++  assert.ok(pages >= 2, info);
++  const text = execFileSync("pdftotext", ["-layout", file, "-"], { encoding: "utf8" });
++  assert.equal(text.includes(DISCLAIMER), true);
++  assert.equal(text.includes("합성가게"), true);
++  assert.equal(text.includes("YouTube"), true);
++  assert.equal(text.includes("TikTok"), true);
++  assert.equal(text.includes("네이버 블로그"), true);
++  assert.equal(text.includes("7일 중 3일 수집 · 전주 비교는 자료 부족"), true);
++  assert.equal(text.includes("channels.list"), false);
++  assert.equal(text.includes("statistics."), false);
++  assert.equal(text.includes("graph /me"), false);
++  assert.equal(text.includes("delta"), false);
++  assert.equal(text.includes("막대그래프"), false);
++  assert.equal(text.includes("OTHER-SECRET"), false);
++  assert.equal(text.includes("%"), false);
++  const page1 = execFileSync("pdftotext", ["-f", "1", "-l", "1", "-layout", file, "-"], { encoding: "utf8" });
++  const page2 = execFileSync("pdftotext", ["-f", "2", "-l", "2", "-layout", file, "-"], { encoding: "utf8" });
++  assert.equal(page1.includes(DISCLAIMER), true);
++  assert.equal(page1.includes("한국시간"), true);
++  assert.equal(page1.includes("게시물별"), false);
++  assert.equal(page1.includes(report.coverage.headline), true);
++  assert.equal(page2.includes("YouTube"), true);
++  assert.equal(page2.includes("게시물별 통계 미수집"), true);
++  assert.equal(text.includes("데이터 현황"), true);
++  assert.equal(text.includes("ambiguous_zero"), false);
++  assert.equal(text.includes(" available"), false);
++  assert.equal(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(text), false);
++  assert.ok(page2.trim().length > 40, page2);
++  const snap = path.join(os.tmpdir(), "weekly-snap-unchanged.json");
++  fs.writeFileSync(snap, JSON.stringify({ version: 1, days: { "2026-11-06": {} } }));
++  const beforeHash = fs.readFileSync(snap);
++  const { readSnapshotFile } = require("../lib/weekly-report");
++  readSnapshotFile(snap);
++  buildWeeklyReport({
++    email: EMAIL,
++    client: { id: "store-shape", name: "합성가게" },
++    snapshots: readSnapshotFile(snap),
++    connections: {},
++    jobs: [],
++    end: "2026-11-06",
++    days: 7,
++  });
++  assert.deepEqual(fs.readFileSync(snap), beforeHash);
++});

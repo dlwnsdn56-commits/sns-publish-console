@@ -7,6 +7,11 @@ const multer = require("multer");
 const store = require("./lib/store");
 const { CLIENTS, CHANNELS, getClient, getChannel } = require("./lib/channels");
 const { publishViaAdapter } = require("./adapters");
+const {
+  buildStoreAnalysis,
+  selectStoreCache,
+  readCacheFile,
+} = require("./lib/channel-analysis");
 
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -195,12 +200,41 @@ app.post("/api/tasks/:id/complete", (req, res) => {
   res.json({ task: updated });
 });
 
+function insightsCachePath() {
+  if (process.env.SNS_INSIGHTS_CACHE) return process.env.SNS_INSIGHTS_CACHE;
+  const dir = process.env.SNS_DATA_DIR || path.join(__dirname, "data");
+  return path.join(dir, "channel-insights-cache.json");
+}
+
+app.get("/api/stores/:storeId/channel-analysis", (req, res) => {
+  const client = getClient(String(req.params.storeId || ""));
+  if (!client) return res.status(404).json({ error: "가게를 찾을 수 없습니다." });
+  try {
+    const cache = readCacheFile(insightsCachePath());
+    const analysis = buildStoreAnalysis({
+      store: { id: client.id, name: client.name },
+      channels: CHANNELS,
+      jobs: store.getJobs(),
+      cacheEntry: selectStoreCache(cache.stores, client.id),
+      cacheStatus: { present: cache.present, ok: cache.ok, error: cache.error },
+    });
+    res.json(analysis);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "채널 분석을 만들지 못했습니다." });
+  }
+});
+
 app.get("*", (req, res, next) => {
   if (req.path.startsWith("/api/")) return next();
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
-app.listen(PORT, HOST, () => {
-  console.log(`SNS 발행 콘솔 실행 중 http://${HOST}:${PORT}`);
-  console.log(`로컬: http://localhost:${PORT}`);
-});
+if (require.main === module) {
+  app.listen(PORT, HOST, () => {
+    console.log(`SNS 발행 콘솔 실행 중 http://${HOST}:${PORT}`);
+    console.log(`로컬: http://localhost:${PORT}`);
+  });
+}
+
+module.exports = { app };

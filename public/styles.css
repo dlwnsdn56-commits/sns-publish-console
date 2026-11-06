@@ -152,4 +152,12 @@ th { font-size: 12px; color: var(--muted); font-weight: 600; }
 .naver-item h3 { margin: 0 0 8px; font-size: 15px; }
 .meta { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
 
+.analysis-head { margin: 12px 0; max-width: 320px; }
+.channel-block { border-top: 1px solid var(--line); padding: 14px 0; }
+.channel-block h3 { margin: 0 0 8px; font-size: 15px; }
+.kv { font-size: 13px; margin: 4px 0; }
+.badge.muted { color: var(--muted); }
+.badge.reconnect { color: var(--fail); border-color: #e3bcbc; }
+.metric-note { font-size: 12px; color: var(--muted); margin: 8px 0; }
+
 .hidden { display: none; }

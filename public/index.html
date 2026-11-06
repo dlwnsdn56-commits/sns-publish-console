@@ -16,6 +16,7 @@
       <a href="/" data-nav="/">새 발행</a>
       <a href="/jobs" data-nav="/jobs">작업 목록</a>
       <a href="/naver" data-nav="/naver">네이버 큐</a>
+      <a href="/analysis" data-nav="/analysis">채널 분석</a>
     </nav>
 
     <section id="view-publish" class="card hidden">
@@ -66,6 +67,19 @@
       <h2>작업 목록</h2>
       <p class="hint">새로고침해도 저장됩니다. API 채널은 잠시 후 발행됨(시뮬)로 바뀝니다.</p>
       <div id="jobs-table"></div>
+    </section>
+
+    <section id="view-analysis" class="card hidden">
+      <h2>채널 분석</h2>
+      <p class="hint">선택한 가게의 연결 계정, 캐시에 있는 제공자 지표, 이 콘솔에 기록된 발행 작업 수만 표시합니다. 값 없음은 빈 값으로 두고, 숫자 0만 0으로 표시합니다.</p>
+      <div class="analysis-head">
+        <label class="field" style="margin:0; flex:1">
+          <span class="lbl">가게</span>
+          <select id="analysisStore"></select>
+        </label>
+      </div>
+      <p class="hint">가게 구분은 기존 클라이언트 id입니다. 이 화면을 만든 시각은 데이터 갱신 시각이 아닙니다.</p>
+      <div id="analysis-body"></div>
     </section>
 
     <section id="view-naver" class="card hidden">

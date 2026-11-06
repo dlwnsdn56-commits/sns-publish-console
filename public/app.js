@@ -3,6 +3,7 @@
     "/": "view-publish",
     "/jobs": "view-jobs",
     "/naver": "view-naver",
+    "/analysis": "view-analysis",
   };
 
   function pathOf() {
@@ -20,6 +21,7 @@
     });
     if (p === "/jobs") loadJobs();
     if (p === "/naver") loadNaver();
+    if (p === "/analysis") loadAnalysis();
   }
 
   window.addEventListener("popstate", showView);
@@ -59,13 +61,16 @@
   async function loadMeta() {
     const res = await fetch("/api/meta");
     const data = await res.json();
-    const sel = document.getElementById("clientId");
-    data.clients.forEach((c) => {
-      const opt = document.createElement("option");
-      opt.value = c.id;
-      opt.textContent = c.name;
-      sel.appendChild(opt);
+    ["clientId", "analysisStore"].forEach((id) => {
+      const sel = document.getElementById(id);
+      data.clients.forEach((c) => {
+        const opt = document.createElement("option");
+        opt.value = c.id;
+        opt.textContent = c.name;
+        sel.appendChild(opt);
+      });
     });
+    document.getElementById("analysisStore").addEventListener("change", loadAnalysis);
     const box = document.getElementById("channels");
     data.channels.forEach((ch) => {
       const lab = document.createElement("label");
@@ -243,6 +248,114 @@
         loadNaver();
       });
     });
+  }
+
+  let analysisSeq = 0;
+
+  function accountText(account) {
+    if (!account) return "계정 정보 없음";
+    const bits = [];
+    if (account.displayName) bits.push(account.displayName);
+    if (account.handle) bits.push(account.handle);
+    if (account.id) bits.push("id " + account.id);
+    return bits.join(" · ") || "계정 정보 없음";
+  }
+
+  function connectionBadge(connection) {
+    if (!connection) return "muted";
+    if (connection.code === "reconnect") return "reconnect";
+    if (connection.code === "not_connected") return "wait";
+    if (connection.code === "connected") return "done";
+    return "muted";
+  }
+
+  function renderAnalysis(box, data) {
+    const cacheLine = !data.cache
+      ? ""
+      : data.cache.ok
+        ? data.cache.present
+          ? "제공자 캐시 파일을 읽었습니다."
+          : "제공자 캐시 파일이 없습니다."
+        : `제공자 캐시를 사용하지 않았습니다. ${esc(data.cache.error || "")}`;
+    const channels = (data.channels || [])
+      .map((ch) => {
+        const statuses = Object.entries(ch.console.byStatus || {})
+          .map(
+            ([status, count]) =>
+              `<span class="badge ${badgeClass(status)}">${esc(status)} ${esc(count)}</span>`
+          )
+          .join(" ");
+        const metricRows = (ch.metrics || [])
+          .map((metric) => {
+            const value =
+              metric.state === "available" ? esc(metric.value) : "값 없음";
+            const unit = metric.unit ? ` ${esc(metric.unit)}` : "";
+            const definition = metric.definition ? esc(metric.definition) : "정의 없음";
+            const state = metric.state === "available" ? "확인된 값" : "값 없음";
+            return `<tr>
+              <td>${esc(metric.key)}</td>
+              <td>${value}${metric.state === "available" ? unit : ""}</td>
+              <td>${definition}</td>
+              <td>${state}</td>
+            </tr>`;
+          })
+          .join("");
+        const metricsBlock = metricRows
+          ? `<table>
+              <thead><tr><th>지표</th><th>값</th><th>정의</th><th>상태</th></tr></thead>
+              <tbody>${metricRows}</tbody>
+            </table>`
+          : `<p class="metric-note">표시할 제공자 지표 항목이 없습니다.</p>`;
+        const review =
+          ch.review && ch.review.code === "pending_review"
+            ? `<span class="badge wait">${esc(ch.review.label)}</span>`
+            : `<span class="badge muted">${esc(ch.review ? ch.review.label : "검토 상태 없음")}</span>`;
+        return `<div class="channel-block">
+          <h3>${esc(ch.channelName)}</h3>
+          <div class="kv">
+            <span class="badge ${connectionBadge(ch.connection)}">${esc(ch.connection.label)}</span>
+            ${review}
+          </div>
+          <div class="kv">계정 ${esc(accountText(ch.account))}</div>
+          <div class="kv">제공자 데이터 시각 ${fmtTime(ch.providerFetchedAt)}</div>
+          <div class="kv">최근 발행 작업 시각 ${fmtTime(ch.console.lastTaskAt)}</div>
+          <div class="kv">이 가게의 발행 작업 ${esc(ch.console.taskCount)}건</div>
+          <div class="task-list">${statuses}</div>
+          <p class="metric-note">${esc(ch.providerStateReason || "")}</p>
+          ${metricsBlock}
+        </div>`;
+      })
+      .join("");
+    box.innerHTML = `
+      <p class="kv">이 화면을 만든 시각 ${fmtTime(data.generatedAt)}</p>
+      <p class="kv">${cacheLine}</p>
+      <p>${esc(data.summary ? data.summary.text : "")}</p>
+      ${channels || "<p class='empty'>표시할 채널이 없습니다.</p>"}
+    `;
+  }
+
+  async function loadAnalysis() {
+    const seq = ++analysisSeq;
+    const box = document.getElementById("analysis-body");
+    const storeId = document.getElementById("analysisStore").value;
+    if (!storeId) {
+      box.innerHTML = "<p class='empty'>가게를 선택하세요.</p>";
+      return;
+    }
+    box.innerHTML = "<p class='empty'>불러오는 중…</p>";
+    try {
+      const res = await fetch(`/api/stores/${encodeURIComponent(storeId)}/channel-analysis`);
+      const data = await res.json().catch(() => ({}));
+      if (seq !== analysisSeq) return;
+      if (!res.ok) {
+        box.innerHTML = `<p class="msg err">${esc(data.error || "분석을 불러오지 못했습니다")}</p>`;
+        return;
+      }
+      renderAnalysis(box, data);
+    } catch (err) {
+      if (seq !== analysisSeq) return;
+      box.innerHTML = "<p class='msg err'>네트워크 오류</p>";
+    }
   }
 
   loadMeta().then(showView).catch((err) => {
