@@ -1,6 +1,6 @@
 --- a/lib/weekly-report-pdf.js
 +++ b/lib/weekly-report-pdf.js
-@@ -0,0 +1,154 @@
+@@ -0,0 +1,207 @@
 +const fs = require("fs");
 +const path = require("path");
 +const PDFDocument = require("pdfkit");
@@ -27,16 +27,24 @@
 +    const left = 40;
 +    const width = 515;
 +    const bottom = 780;
-+    let y = 40;
++    let y = 36;
++
++    function paintCanvas() {
++      doc.save();
++      doc.rect(0, 0, 595.28, 841.89).fill("#F4F6F8");
++      doc.restore();
++    }
++    paintCanvas();
 +
 +    function runningHeader() {
-+      doc.font("kr").fontSize(9).fillColor("#666666");
-+      doc.text(`${report.storeName} · ${report.period.start} ~ ${report.period.end} · 한국시간`, left, 28, { width });
-+      y = 48;
++      doc.font("kr").fontSize(9).fillColor("#667085");
++      doc.text(`${report.storeName} · ${report.period.start} ~ ${report.period.end} · 한국시간`, left, 24, { width });
++      y = 46;
 +    }
 +
 +    function newPage() {
 +      doc.addPage();
++      paintCanvas();
 +      runningHeader();
 +    }
 +
@@ -53,21 +61,65 @@
 +    }
 +
 +    const view = report.presentation;
-+    text(report.fixtureBanner || "주간 리포트", 10, "#8a5a00");
-+    text(report.storeName, 20);
-+    text(`${report.period.start} ~ ${report.period.end} · 한국시간 · ${report.period.days}일`, 12);
-+    text(`마지막 수집 ${report.lastCollectedAtKst || "없음"}`, 11);
-+    text(`문서 작성 ${report.generatedAtKst || ""}`, 11);
-+    text(report.coverage.headline, 13);
-+    text(report.disclaimer, 10);
-+    text(`올린 작업 ${report.publishing.uploadJobs}건 · 채널에 올린 횟수 ${report.publishing.channelPublishTasks}건`, 11);
-+    if (!view.cards.length) text("이 기간에 표시할 숫자가 없습니다.", 12);
-+    for (const card of view.cards) {
-+      text(`${card.channel} ${card.label}  ${card.value}`, 12);
-+      text(`${card.sub}${card.span ? " · " + card.span : ""}`, 9, "#444444");
++    if (report.fixtureBanner) {
++      doc.roundedRect(left, y, width, 28, 10).fill("#FFF6DF");
++      doc.fillColor("#7A5B12").fontSize(9).text(report.fixtureBanner, left + 10, y + 8, { width: width - 20 });
++      y += 38;
 +    }
-+    for (const sum of report.viewSums) text(`${sum.label} ${sum.value}`, 11);
-+    text("숫자가 있는 채널은 다음 장에 있습니다.", 10, "#444444");
++    doc.fillColor("#667085").fontSize(11).text("주간 리포트", left, y, { width });
++    y += 16;
++    doc.fillColor("#1A1A1A").fontSize(22).text(report.storeName, left, y, { width });
++    y += 30;
++    doc.roundedRect(left, y, Math.min(280, width), 22, 11).fill("#E8F0FA");
++    doc.fillColor("#0047AB").fontSize(10).text(report.coverage.headline, left + 10, y + 5, { width: 260 });
++    y += 30;
++    doc.fillColor("#667085").fontSize(10).text(`${report.period.start} ~ ${report.period.end} · 한국시간`, left, y, { width });
++    y += 14;
++    doc.text(`마지막 수집 ${report.lastCollectedAtKst || "없음"} · 문서 작성 ${report.generatedAtKst || ""}`, left, y, { width });
++    y += 16;
++    doc.fillColor("#1A1A1A").fontSize(9).text(report.disclaimer, left, y, { width });
++    y += 28;
++    doc.fillColor("#667085").fontSize(10).text(`올린 작업 ${report.publishing.uploadJobs}건 · 채널에 올린 횟수 ${report.publishing.channelPublishTasks}건`, left, y, { width });
++    y += 20;
++    if (!view.cards.length) text("이 기간에 표시할 숫자가 없습니다.", 12);
++    const colW = (width - 12) / 2;
++    view.cards.forEach((card, index) => {
++      const col = index % 2;
++      if (col === 0) ensure(92);
++      const x = left + col * (colW + 12);
++      const top = y;
++      doc.roundedRect(x, top, colW, 82, 14).fill("#FFFFFF");
++      doc.fillColor("#667085").fontSize(9).text(`${card.channel} · ${card.label}`, x + 12, top + 10, { width: colW - 24 });
++      doc.fillColor("#1A1A1A").fontSize(20).text(card.value, x + 12, top + 28, { width: colW - 24 });
++      doc.fillColor("#667085").fontSize(8).text(card.sub, x + 12, top + 56, { width: colW - 24 });
++      if (col === 1 || index === view.cards.length - 1) y = top + 94;
++    });
++    const dates = [];
++    for (let t = Date.parse(report.period.start + "T00:00:00Z"); t <= Date.parse(report.period.end + "T00:00:00Z"); t += 86400000) {
++      dates.push(new Date(t).toISOString().slice(0, 10));
++    }
++    if (dates.length && dates.length <= 14) {
++      ensure(70);
++      doc.fillColor("#1A1A1A").fontSize(11).text("수집된 날", left, y, { width });
++      y += 18;
++      const gap = 6;
++      const boxW = (width - gap * (dates.length - 1)) / dates.length;
++      dates.forEach((date, index) => {
++        const on = report.coverage.observedDates.indexOf(date) >= 0;
++        const x = left + index * (boxW + gap);
++        doc.roundedRect(x, y, boxW, 32, 8).fill(on ? "#E8F0FA" : "#E6E8EC");
++        doc.fillColor(on ? "#0047AB" : "#667085").fontSize(8).text(date.slice(5), x, y + 10, { width: boxW, align: "center" });
++      });
++      y += 44;
++    }
++    const overview = view.detailChannels[0] && (view.detailChannels[0].shownMetrics.find((metric) => metric.key === "views") || view.detailChannels[0].shownMetrics[0]);
++    if (overview) {
++      ensure(150);
++      doc.roundedRect(left, y, width, 142, 14).fill("#FFFFFF");
++      doc.fillColor("#1A1A1A").fontSize(11).text(`${view.detailChannels[0].label} ${overview.label}`, left + 12, y + 8, { width: width - 24 });
++      drawChart(doc, overview, left + 8, y + 26, width - 16, 104);
++      y += 154;
++    }
 +
 +    if (view.detailChannels.length) {
 +      newPage();
@@ -113,6 +165,7 @@
 +  const yMax = max + pad;
 +  const span = yMax - yMin;
 +  doc.save();
++  doc.roundedRect(x, y - 2, width, height, 12).fill("#FFFFFF");
 +  doc.font("kr").fontSize(8).fillColor("#333333");
 +  doc.text(`${metric.label} (${metric.unit})`, x, y, { width });
 +  doc.fillColor("#333333").text(String(max), x, plotY - 2, { width: 44, align: "right" });
@@ -133,9 +186,9 @@
 +      prev = null;
 +      continue;
 +    }
-+    doc.circle(point.px, point.py, 2.5).fillColor("#355c8c").fill();
++    doc.circle(point.px, point.py, 3).fillColor("#0047AB").fill();
 +    if (prev && addOneDay(prev.cell.date) === point.cell.date) {
-+      doc.moveTo(prev.px, prev.py).lineTo(point.px, point.py).strokeColor("#355c8c").lineWidth(1.2).stroke();
++      doc.moveTo(prev.px, prev.py).lineTo(point.px, point.py).strokeColor("#0047AB").lineWidth(1.4).stroke();
 +    }
 +    prev = point;
 +  }
@@ -1731,16 +1784,18 @@
      "/trends": "view-trends",
      "/mania": "view-mania",
      "/billing": "view-billing",
-@@ -661,6 +662,8 @@
+@@ -661,6 +662,10 @@
      document.getElementById("view-insights").classList.toggle("hidden", p !== "/insights");
      const viewAnalysis = document.getElementById("view-analysis");
      if (viewAnalysis) viewAnalysis.classList.toggle("hidden", p !== "/analysis");
 +    const viewReport = document.getElementById("view-report");
 +    if (viewReport) viewReport.classList.toggle("hidden", p !== "/report");
++    const shell = document.querySelector(".app-shell");
++    if (shell) shell.classList.toggle("report-open", p === "/report");
      const viewTrends = document.getElementById("view-trends");
      if (viewTrends) viewTrends.classList.toggle("hidden", p !== "/trends");
      const viewMania = document.getElementById("view-mania");
-@@ -809,6 +812,8 @@
+@@ -809,6 +814,8 @@
        if (omnibox) omnibox.textContent = "인사이트";
      } else if (p === "/analysis") {
        if (omnibox) omnibox.textContent = "채널 분석";
@@ -1749,7 +1804,7 @@
      } else if (p === "/trends") {
        if (omnibox) omnibox.textContent = "트렌드";
      } else if (p === "/mania") {
-@@ -831,6 +836,7 @@
+@@ -831,6 +838,7 @@
      if (p === "/naver") loadNaver();
      if (p === "/insights") renderInsights();
      if (p === "/analysis") renderChannelAnalysis();
@@ -1757,7 +1812,7 @@
      if (p === "/trends") loadTrends();
      if (p === "/mania") loadMania();
      if (p === "/billing") loadBillingPage();
-@@ -2701,6 +2707,7 @@
+@@ -2701,6 +2709,7 @@
      renderSnsPreview();
      loadLatestUploadLinks();
      if (pathOf() === "/analysis") renderChannelAnalysis();
@@ -1765,7 +1820,7 @@
    }
  
    function sidebarMsg(text, ok) {
-@@ -4582,6 +4589,125 @@
+@@ -4582,6 +4591,159 @@
      }
    }
  
@@ -1825,27 +1880,61 @@
 +  function renderWeeklyReportView(data) {
 +    const view = data.presentation || { cards: [], detailChannels: [], statusRows: [], criteria: [] };
 +    const banner = data.fixtureBanner ? `<div class="report-banner">${esc(data.fixtureBanner)}</div>` : "";
++    const days = (data.period && data.coverage)
++      ? enumerateClient(data.period.start, data.period.end).map((date) => {
++          const on = (data.coverage.observedDates || []).indexOf(date) >= 0;
++          return `<div class="report-day${on ? " on" : ""}">${esc(date.slice(5))}</div>`;
++        }).join("")
++      : "";
 +    const cards = view.cards.length
-+      ? `<div class="report-cards">${view.cards.map((card) => `<article class="insight-card"><div class="ic-note">${esc(card.channel)} · ${esc(card.label)}</div><div class="report-card-value">${esc(card.value)}</div><div class="ic-note">${esc(card.sub)}</div>${card.span ? `<div class="ic-note">${esc(card.span)}</div>` : ""}</article>`).join("")}</div>`
-+      : `<p class="ic-note">이 기간에 표시할 숫자가 없습니다.</p>`;
++      ? `<div class="report-cards">${view.cards.map((card) => `<article class="report-kpi"><span>${esc(card.channel)} · ${esc(card.label)}</span><b>${esc(card.value)}</b><small>${esc(card.sub)}${card.span ? " · " + esc(card.span) : ""}</small></article>`).join("")}</div>`
++      : `<p class="report-note">이 기간에 표시할 숫자가 없습니다.</p>`;
++    const firstChart = (view.detailChannels[0] && view.detailChannels[0].shownMetrics || []).find((metric) => metric.key === "views") || (view.detailChannels[0] && view.detailChannels[0].shownMetrics[0]);
++    const overview = firstChart ? `<section class="report-panel"><h3>${esc(view.detailChannels[0].label)} ${esc(firstChart.label)}</h3>${reportSvg(firstChart)}</section>` : "";
++    const channelPills = document.getElementById("report-channels");
++    if (channelPills && channelPills.dataset.ready !== data.storeId) {
++      channelPills.dataset.ready = data.storeId;
++      channelPills.innerHTML = `<button type="button" class="report-pill active" data-report-channel="all">전체</button>` +
++        (view.detailChannels || []).map((ch) => `<button type="button" class="report-pill" data-report-channel="${esc(ch.platform)}">${esc(ch.label)}</button>`).join("");
++      channelPills.querySelectorAll("[data-report-channel]").forEach((btn) => {
++        btn.addEventListener("click", () => {
++          channelPills.querySelectorAll("[data-report-channel]").forEach((el) => el.classList.toggle("active", el === btn));
++          const id = btn.getAttribute("data-report-channel");
++          document.querySelectorAll("[data-report-detail]").forEach((el) => {
++            el.hidden = id !== "all" && el.getAttribute("data-report-detail") !== id;
++          });
++        });
++      });
++    }
 +    const details = (view.detailChannels || []).map((ch) => {
-+      const metrics = (ch.shownMetrics || []).map((metric) => `<h3>${esc(metric.label)}</h3><p class="ic-note">${esc(metric.definition || "")}</p>${metric.customerSpan ? `<p>${esc(metric.customerSpan)}</p>` : ""}${metric.comparison && metric.comparison.eligible ? `<p>전주 ${esc(metric.comparison.text)}</p>` : ""}${reportSvg(metric)}`).join("");
-+      return `<section class="insight-card"><div class="ic-head"><span class="ic-name">${esc(ch.label)}</span><span>${esc(ch.account && ch.account.displayName ? ch.account.displayName : ch.status.label)}</span></div><p>${esc(ch.posts.reason)}</p>${metrics}</section>`;
++      const metrics = (ch.shownMetrics || []).map((metric) => `<h3>${esc(metric.label)} ${metric.asOf ? esc(metric.asOf.value + metric.unit) : ""}</h3><p class="report-note">${esc(metric.definition || "")}</p>${metric.customerSpan ? `<p>${esc(metric.customerSpan)}</p>` : ""}${metric.comparison && metric.comparison.eligible ? `<p>전주 ${esc(metric.comparison.text)}</p>` : ""}${reportSvg(metric)}`).join("");
++      return `<section class="report-panel" data-report-detail="${esc(ch.platform)}"><div class="ic-head"><span class="ic-name">${esc(ch.label)}</span><span>${esc(ch.account && ch.account.displayName ? ch.account.displayName : ch.status.label)}</span></div><p>${esc(ch.posts.reason)}</p>${metrics}</section>`;
 +    }).join("");
 +    const rows = (view.statusRows || []).map((row) => `<tr><td>${esc(row.label)}</td><td>${esc(row.note)}</td></tr>`).join("");
-+    const table = rows ? `<h3>데이터 현황</h3><table class="analysis-table"><thead><tr><th>채널</th><th>상태</th></tr></thead><tbody>${rows}</tbody></table>` : "";
++    const table = rows ? `<section class="report-panel"><h3>데이터 현황</h3><table class="report-status-table"><tbody>${rows}</tbody></table></section>` : "";
 +    const criteria = (view.criteria || []).map((line) => `<li>${esc(line)}</li>`).join("");
 +    return `${banner}
-+      <p class="report-kicker">${esc(data.storeName)}</p>
-+      <p class="report-period">${esc(data.period.start)} ~ ${esc(data.period.end)} · 한국시간</p>
++      <p class="report-kicker">주간 리포트</p>
++      <p class="report-period">${esc(data.storeName)}</p>
 +      <p class="report-headline">${esc(data.coverage.headline || "")}</p>
-+      <p class="ic-note">마지막 수집 ${esc(data.lastCollectedAtKst || "없음")} · 문서 작성 ${esc(data.generatedAtKst || "")}</p>
-+      <p>${esc(data.disclaimer || "")}</p>
-+      <p>올린 작업 ${esc(data.publishing.uploadJobs)}건 · 채널에 올린 횟수 ${esc(data.publishing.channelPublishTasks)}건</p>
++      <p class="report-meta">${esc(data.period.start)} ~ ${esc(data.period.end)} · 마지막 수집 ${esc(data.lastCollectedAtKst || "없음")} · 문서 작성 ${esc(data.generatedAtKst || "")}</p>
++      <p class="report-note">${esc(data.disclaimer || "")}</p>
++      <p class="report-note">올린 작업 ${esc(data.publishing.uploadJobs)}건 · 채널에 올린 횟수 ${esc(data.publishing.channelPublishTasks)}건</p>
 +      ${cards}
++      <section class="report-panel"><h3>수집된 날</h3><div class="report-days">${days}</div></section>
++      ${overview}
 +      ${details}
 +      ${table}
 +      <details class="report-criteria"><summary>집계 기준</summary><ul>${criteria}</ul></details>`;
++  }
++
++  function enumerateClient(start, end) {
++    const out = [];
++    const day = 86400000;
++    for (let t = Date.parse(start + "T00:00:00Z"); t <= Date.parse(end + "T00:00:00Z"); t += day) {
++      out.push(new Date(t).toISOString().slice(0, 10));
++    }
++    return out;
 +  }
 +
 +  async function renderWeeklyReport() {
@@ -1901,23 +1990,22 @@
          <a href="/trends" data-nav="/trends" id="trends-nav-link" hidden>트렌드</a>
          <a href="/mania" data-nav="/mania" id="mania-nav-link" hidden>매니아 취향</a>
          <a href="/billing" data-nav="/billing">요금</a>
-@@ -769,6 +770,22 @@
+@@ -769,6 +770,21 @@
          <p class="sub">왼쪽에서 고른 가게에 연결된 채널만 보여 줍니다. 숫자는 인사이트 스냅샷에 있는 값만 쓰고, 없는 값은 0으로 바꾸지 않습니다.</p>
          <p class="hint" id="analysis-status"></p>
          <div id="analysis-body"></div>
 +      </section>
 +
-+      <section id="view-report" class="hidden">
-+        <h2>주간 리포트</h2>
-+        <p class="sub">선택한 가게의 수집 스냅샷만 사용합니다. 없는 날은 0이 아니고, 선은 이어지지 않습니다.</p>
++      <section id="view-report" class="hidden report-page">
 +        <div class="report-toolbar">
-+          <label>종료일 <input type="date" id="report-end" /></label>
-+          <div class="report-days" role="group" aria-label="기간">
-+            <button type="button" class="period-btn" data-report-days="7">7일</button>
-+            <button type="button" class="period-btn" data-report-days="14">14일</button>
-+            <button type="button" class="period-btn" data-report-days="28">28일</button>
++          <input type="date" id="report-end" aria-label="종료일" />
++          <div class="report-pills" role="group" aria-label="기간">
++            <button type="button" class="report-pill active" data-report-days="7">7일</button>
++            <button type="button" class="report-pill" data-report-days="14">14일</button>
++            <button type="button" class="report-pill" data-report-days="28">28일</button>
 +          </div>
-+          <a class="btn ghost" id="report-pdf" href="#">PDF 받기</a>
++          <div class="report-pills" id="report-channels" role="group" aria-label="채널"></div>
++          <a class="report-pdf" id="report-pdf" href="#">PDF 받기</a>
 +        </div>
 +        <p class="hint" id="report-status"></p>
 +        <div id="report-body"></div>
@@ -1926,17 +2014,48 @@
        <section id="view-mania" class="hidden">
 --- a/public/styles.css
 +++ b/public/styles.css
-@@ -2420,6 +2420,16 @@
+@@ -2420,6 +2420,47 @@
  .insights-store-nums span { display: block; font-size: 12px; color: var(--muted); }
  .insights-store-nums b { font-size: 18px; }
  .analysis-list { display: flex; flex-direction: column; gap: 12px; }
++.app-shell.report-open { grid-template-columns: 220px minmax(0, 1fr); }
++.app-shell.report-open .ad-rail { display: none; }
++.app-shell.report-open .main { background: #f3f5f8; padding: 18px 24px 64px; }
++.report-page { max-width: 1100px; }
++.report-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 14px; }
++.report-toolbar input[type="date"] { width: auto; border-radius: 999px; padding: 8px 12px; background: #fff; }
++.report-pills { display: flex; gap: 6px; flex-wrap: wrap; }
++.report-pill, .report-pdf {
++  border: 0; border-radius: 999px; background: #fff; color: var(--text);
++  padding: 8px 14px; font-weight: 700; font-size: 14px; text-decoration: none; cursor: pointer;
++}
++.report-pill.active, .report-pdf { background: var(--blue); color: #fff; }
++.report-banner { background: #fff6df; border-radius: 14px; padding: 10px 14px; margin-bottom: 14px; color: #7a5b12; font-size: 13px; }
 +.report-kicker { margin: 0; color: var(--muted); font-size: 13px; }
-+.report-period { margin: 2px 0 8px; font-size: 22px; font-weight: 800; }
-+.report-headline { margin: 0 0 12px; font-size: 16px; font-weight: 700; }
-+.report-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; margin: 12px 0; }
-+.report-card-value { font-size: 28px; font-weight: 800; line-height: 1.2; }
-+.report-criteria { margin-top: 16px; font-size: 13px; color: var(--muted); }
-+.report-toolbar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 12px; }
++.report-period { margin: 2px 0 6px; font-size: 28px; font-weight: 800; letter-spacing: -0.03em; }
++.report-headline { display: inline-block; margin: 0 0 8px; padding: 6px 10px; border-radius: 999px; background: var(--blue-soft); color: var(--blue); font-weight: 700; }
++.report-meta, .report-note { color: var(--muted); font-size: 13px; margin: 4px 0; }
++.report-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 16px 0; }
++.report-kpi { background: #fff; border-radius: 18px; padding: 16px 18px 14px; box-shadow: 0 1px 0 rgba(16,24,40,.04); }
++.report-kpi span { display: block; color: var(--muted); font-size: 13px; }
++.report-kpi b { display: block; margin-top: 6px; font-size: 34px; line-height: 1.1; letter-spacing: -0.03em; }
++.report-kpi small { display: block; margin-top: 6px; color: var(--muted); font-size: 12px; }
++.report-panel { background: #fff; border-radius: 18px; padding: 16px 18px 12px; margin: 12px 0; }
++.report-panel h3 { margin: 0 0 8px; font-size: 16px; }
++.report-days { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
++.report-day { text-align: center; border-radius: 12px; padding: 8px 0; background: #eef1f4; color: var(--muted); font-size: 12px; }
++.report-day.on { background: var(--blue-soft); color: var(--blue); font-weight: 700; }
++.report-svg { width: 100%; height: 220px; }
++.report-status-table { width: 100%; border-collapse: collapse; }
++.report-status-table td { padding: 12px 4px; border-top: 1px solid var(--line); }
++.report-criteria { margin-top: 8px; color: var(--muted); font-size: 13px; }
++.report-criteria summary { cursor: pointer; font-weight: 700; color: var(--text); }
++@media (max-width: 720px) {
++  .report-cards, .report-days { grid-template-columns: 1fr 1fr; }
++  .report-period { font-size: 22px; }
++  .report-kpi b { font-size: 28px; }
++  .app-shell.report-open .main { padding: 12px 12px 40px; }
++}
 +.report-toolbar input[type="date"] { width: auto; }
 +.report-banner { border: 1px solid #ead9b0; background: #fff8e8; padding: 10px 12px; margin-bottom: 12px; font-size: 13px; }
 +.report-svg { width: 100%; height: 180px; background: #fff; border: 1px solid var(--line); }
