@@ -6,7 +6,7 @@
 
 | 파일 | SHA-256 |
 | --- | --- |
-| `onepost-weekly-report.patch` | `55209b52a7cb5f6f94e526d775550a5b09ac8ef8c808035451180b734dea099c` |
+| `onepost-weekly-report.patch` | `d592996158231e67fb80e4d1491a9f9b8234f20e1e0058f79925218a8014085d` |
 | `fonts/NotoSansKR-Regular.ttf` | `c7a87157b2381a8b5d3e7831f7faa57d34e73dd149ea20b89c7d23609cd7efe5` |
 | `fonts/OFL.txt` | `1c05c68c34f9708415aada51f17e1b0092d2cea709bf4a94cd38114f9e73d7d9` |
 

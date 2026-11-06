@@ -1820,7 +1820,7 @@
    }
  
    function sidebarMsg(text, ok) {
-@@ -4582,6 +4591,159 @@
+@@ -4582,6 +4591,178 @@
      }
    }
  
@@ -1976,6 +1976,25 @@
 +  });
 +  const reportEnd = document.getElementById("report-end");
 +  if (reportEnd) reportEnd.addEventListener("change", renderWeeklyReport);
++  const reportMenu = document.getElementById("report-menu");
++  if (reportMenu) {
++    reportMenu.addEventListener("click", () => {
++      const shell = document.querySelector(".app-shell");
++      if (!shell) return;
++      const open = shell.classList.toggle("report-nav-open");
++      reportMenu.setAttribute("aria-expanded", open ? "true" : "false");
++    });
++    const closeReportNav = () => {
++      const shell = document.querySelector(".app-shell");
++      if (shell) shell.classList.remove("report-nav-open");
++      reportMenu.setAttribute("aria-expanded", "false");
++    };
++    document.querySelectorAll("#client-sidebar a").forEach((link) => {
++      link.addEventListener("click", closeReportNav);
++    });
++    const backdrop = document.getElementById("report-backdrop");
++    if (backdrop) backdrop.addEventListener("click", closeReportNav);
++  }
 +
    /* ---------- 트렌드 (관리자 미리보기) ---------- */
    let trendsData = null;
@@ -1990,14 +2009,16 @@
          <a href="/trends" data-nav="/trends" id="trends-nav-link" hidden>트렌드</a>
          <a href="/mania" data-nav="/mania" id="mania-nav-link" hidden>매니아 취향</a>
          <a href="/billing" data-nav="/billing">요금</a>
-@@ -769,6 +770,21 @@
+@@ -769,6 +770,23 @@
          <p class="sub">왼쪽에서 고른 가게에 연결된 채널만 보여 줍니다. 숫자는 인사이트 스냅샷에 있는 값만 쓰고, 없는 값은 0으로 바꾸지 않습니다.</p>
          <p class="hint" id="analysis-status"></p>
          <div id="analysis-body"></div>
 +      </section>
 +
 +      <section id="view-report" class="hidden report-page">
++        <div class="report-backdrop" id="report-backdrop" hidden></div>
 +        <div class="report-toolbar">
++          <button type="button" class="report-menu" id="report-menu" aria-controls="client-sidebar" aria-expanded="false">메뉴</button>
 +          <input type="date" id="report-end" aria-label="종료일" />
 +          <div class="report-pills" role="group" aria-label="기간">
 +            <button type="button" class="report-pill active" data-report-days="7">7일</button>
@@ -2014,13 +2035,15 @@
        <section id="view-mania" class="hidden">
 --- a/public/styles.css
 +++ b/public/styles.css
-@@ -2420,6 +2420,47 @@
+@@ -2420,6 +2420,62 @@
  .insights-store-nums span { display: block; font-size: 12px; color: var(--muted); }
  .insights-store-nums b { font-size: 18px; }
  .analysis-list { display: flex; flex-direction: column; gap: 12px; }
 +.app-shell.report-open { grid-template-columns: 220px minmax(0, 1fr); }
 +.app-shell.report-open .ad-rail { display: none; }
-+.app-shell.report-open .main { background: #f3f5f8; padding: 18px 24px 64px; }
++.app-shell.report-open .main { background: #f3f5f8; padding: 18px 24px 64px; min-width: 0; }
++.report-menu { display: none; }
++.report-backdrop { display: none; position: fixed; inset: 0; background: rgba(16,24,40,.35); z-index: 30; }
 +.report-page { max-width: 1100px; }
 +.report-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 14px; }
 +.report-toolbar input[type="date"] { width: auto; border-radius: 999px; padding: 8px 12px; background: #fff; }
@@ -2038,7 +2061,7 @@
 +.report-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 16px 0; }
 +.report-kpi { background: #fff; border-radius: 18px; padding: 16px 18px 14px; box-shadow: 0 1px 0 rgba(16,24,40,.04); }
 +.report-kpi span { display: block; color: var(--muted); font-size: 13px; }
-+.report-kpi b { display: block; margin-top: 6px; font-size: 34px; line-height: 1.1; letter-spacing: -0.03em; }
++.report-kpi b { display: block; margin-top: 6px; font-size: 34px; line-height: 1.1; letter-spacing: -0.03em; white-space: nowrap; }
 +.report-kpi small { display: block; margin-top: 6px; color: var(--muted); font-size: 12px; }
 +.report-panel { background: #fff; border-radius: 18px; padding: 16px 18px 12px; margin: 12px 0; }
 +.report-panel h3 { margin: 0 0 8px; font-size: 16px; }
@@ -2050,11 +2073,24 @@
 +.report-status-table td { padding: 12px 4px; border-top: 1px solid var(--line); }
 +.report-criteria { margin-top: 8px; color: var(--muted); font-size: 13px; }
 +.report-criteria summary { cursor: pointer; font-weight: 700; color: var(--text); }
-+@media (max-width: 720px) {
-+  .report-cards, .report-days { grid-template-columns: 1fr 1fr; }
-+  .report-period { font-size: 22px; }
-+  .report-kpi b { font-size: 28px; }
-+  .app-shell.report-open .main { padding: 12px 12px 40px; }
++@media (max-width: 860px) {
++  .app-shell.report-open { grid-template-columns: minmax(0, 1fr); }
++  .app-shell.report-open .side {
++    position: fixed; z-index: 40; top: 0; left: 0; width: min(280px, 88vw);
++    transform: translateX(-105%); transition: transform .2s ease;
++    min-height: 100vh; max-height: 100vh; box-shadow: none;
++  }
++  .app-shell.report-open.report-nav-open .side { transform: none; }
++  .app-shell.report-open.report-nav-open .report-backdrop { display: block; }
++  .report-menu { display: inline-flex; align-items: center; }
++  .app-shell.report-open .main { padding: 12px 12px 48px; }
++  .report-page { max-width: none; }
++  .report-cards { grid-template-columns: 1fr 1fr; gap: 8px; }
++  .report-kpi { padding: 12px 10px; }
++  .report-kpi b { font-size: 26px; }
++  .report-period { font-size: 24px; }
++  .report-days { grid-template-columns: repeat(7, minmax(0, 1fr)); }
++  .report-svg { height: 200px; }
 +}
 +.report-toolbar input[type="date"] { width: auto; }
 +.report-banner { border: 1px solid #ead9b0; background: #fff8e8; padding: 10px 12px; margin-bottom: 12px; font-size: 13px; }
@@ -2125,6 +2161,83 @@
    }
  });
  
+--- a/test/report-layout.test.js
++++ b/test/report-layout.test.js
+@@ -0,0 +1,74 @@
++const fs = require("fs");
++const test = require("node:test");
++const assert = require("node:assert/strict");
++
++test("report route keeps the sidebar off the mobile canvas", async (t) => {
++  let puppeteer;
++  try {
++    puppeteer = require("puppeteer-core");
++  } catch {
++    return t.skip("puppeteer-core is not installed");
++  }
++  if (!fs.existsSync("/usr/bin/google-chrome")) return t.skip("google-chrome is not installed");
++  let browser;
++  try {
++    browser = await puppeteer.launch({
++      executablePath: "/usr/bin/google-chrome",
++      headless: true,
++      args: ["--no-sandbox", "--disable-dev-shm-usage"],
++    });
++    for (const width of [390, 360]) {
++      const page = await browser.newPage();
++      await page.setViewport({ width, height: 900, deviceScaleFactor: 1 });
++      const response = await page.goto("http://127.0.0.1:3020/report", { waitUntil: "networkidle0", timeout: 15000 });
++      if (!response || !response.ok()) {
++        await page.close();
++        return t.skip("report preview server is not running");
++      }
++      await page.waitForSelector(".report-kpi b");
++      const box = await page.evaluate(() => {
++        const side = document.querySelector(".side").getBoundingClientRect();
++        const main = document.querySelector(".main").getBoundingClientRect();
++        const cards = [...document.querySelectorAll(".report-kpi b")].map((el) => ({
++          text: el.textContent.replace(/\s+/g, ""),
++          lines: el.getClientRects().length,
++          clipped: el.scrollWidth > el.clientWidth + 1,
++        }));
++        return {
++          scrollWidth: document.documentElement.scrollWidth,
++          innerWidth: window.innerWidth,
++          sideRight: side.right,
++          mainWidth: main.width,
++          cards,
++        };
++      });
++      assert.ok(box.scrollWidth <= box.innerWidth + 1, `${width} scroll ${box.scrollWidth} > ${box.innerWidth}`);
++      assert.ok(box.sideRight <= 1, `${width} sidebar still on screen ${box.sideRight}`);
++      assert.ok(box.mainWidth >= box.innerWidth - 1, `${width} main ${box.mainWidth} viewport ${box.innerWidth}`);
++      for (const card of box.cards) {
++        assert.equal(card.lines, 1, card.text);
++        assert.equal(card.clipped, false, card.text);
++      }
++      assert.ok(box.cards.some((card) => card.text === "140회"));
++      assert.ok(box.cards.some((card) => card.text === "12명"));
++      await page.close();
++    }
++    const desktop = await browser.newPage();
++    await desktop.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
++    await desktop.goto("http://127.0.0.1:3020/report", { waitUntil: "networkidle0" });
++    const wide = await desktop.evaluate(() => {
++      const side = document.querySelector(".side").getBoundingClientRect();
++      return {
++        scrollWidth: document.documentElement.scrollWidth,
++        innerWidth: window.innerWidth,
++        sideRight: side.right,
++        sideWidth: side.width,
++      };
++    });
++    assert.ok(wide.sideRight > 100, "desktop sidebar should stay available");
++    assert.ok(wide.scrollWidth <= wide.innerWidth + 1);
++    await desktop.close();
++  } finally {
++    if (browser) await browser.close();
++  }
++});
 --- a/test/weekly-report.test.js
 +++ b/test/weekly-report.test.js
 @@ -0,0 +1,307 @@
