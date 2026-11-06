@@ -3,3 +3,4 @@ uploads/*
 !uploads/.gitkeep
 data/jobs.json
 data/jobs.json.tmp
+data/channel-insights-cache.json
