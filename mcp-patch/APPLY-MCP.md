@@ -2,21 +2,26 @@
 
 배포하지 않는다. 머지하지 않는다. 이 문서는 적용 절차만 적는다.
 
-기준은 2026-11-06 내보내기에 **이미 배포된 채널 분석 패치**를 적용한 트리이다. 주간 리포트 패치는 포함하지 않는다. `public/ether.html`은 포함하지 않는다. 운영 중인 달고맵고 홈(`2be5b43b8726aed0b1c04498bff5ed0e399d7799ef8f033b5574c74854510402`)을 되돌리지 않는다.
+주간 리포트 패치는 포함하지 않는다. `public/ether.html`과 `public/ether-sua.html`은 포함하지 않는다.
 
 ## 적용 전 확인
 
 운영 트리에서 아래 해시가 같을 때만 `patch --dry-run -p1`를 한다. 하나라도 다르면 멈추고 현재 파일을 다시 받는다.
 
-- `server.js` `f40c75bdd1927431a8c893731b0250377606d970e438003923e8972cc7bcb81b`
+- `server.js` `9023132f5281ccf5aea70b9b4530b75cdd795cca29c98f248f997d2a1af12662`
 - `public/index.html` `7c41f4f3708274e4fd425a99b75bc28597f107f8c3fb77e4e13f2fc1df805a17`
 - `public/ether.html`은 패치 대상이 아니다. 배포된 값 `2be5b43b8726aed0b1c04498bff5ed0e399d7799ef8f033b5574c74854510402`가 유지되어야 한다.
+- `public/ether-sua.html`도 패치 대상이 아니다. `58381e71bf91ad7dfaf3a9eb6a216271a1cc005d5e912e079d34d8c12dd7219c`
+
+이전 기준 `f40c75bdd1927431a8c893731b0250377606d970e438003923e8972cc7bcb81b`는 이 운영 `server.js`와 계정 리터럴 8줄만 달랐다. 그 줄은 이 패치의 변경과 문맥에 없다. 패치 파일에 그 값을 넣지 않는다.
 
 ```
 cd /opt/onepost/sns-publish-console
-sha256sum server.js public/index.html public/ether.html
+sha256sum server.js public/index.html public/ether.html public/ether-sua.html
 patch --dry-run -p1 < onepost-mcp-final.patch
 ```
+
+`server.js` 적용 후 SHA-256은 여기서 적지 않는다. 원본을 격리 디렉터리에 복사한 뒤 그 복사본에만 패치를 적용하고 `sha256sum server.js`로 계산한다. 파일 내용은 출력하지 않는다. 편집본 해시나 편집본에 패치를 적용한 해시를 운영 적용 후 해시로 쓰지 않는다.
 
 새 npm 패키지는 없다. `package.json`과 `package-lock.json`은 바꾸지 않는다. 데이터베이스 마이그레이션은 없다. 첫 사용 때 `data/mcp.json`과 `data/mcp-audit.jsonl`이 생긴다. 공식 MCP SDK는 서버 의존성이 아니다.
 
