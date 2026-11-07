@@ -1,0 +1,90 @@
+--- a/public/ether.html
++++ b/public/ether.html
+@@ -76,6 +76,13 @@
+ .pf .it video{width:100%;height:100%;object-fit:cover}
+ .pf .cap{position:absolute;left:0;right:0;bottom:0;padding:26px 12px 12px;background:linear-gradient(transparent,rgba(0,0,0,.75));font-size:13px;font-weight:700}
+ .pf .cap small{display:block;color:var(--ac2);font-weight:600;letter-spacing:.1em;font-size:11px}
++#dalgomaebgo h2,#dalgomaebgo .lead,#dalgomaebgo .note{word-break:keep-all}
++.dg{display:grid;gap:12px;grid-template-columns:1fr 1fr}
++.dg .v{border:1px solid var(--line);border-radius:16px;overflow:hidden;background:#0c1222}
++.dg .yt{aspect-ratio:16/9;cursor:pointer}
++.dg .yt img{width:100%;height:100%;object-fit:cover;display:block}
++.dg .vcap{margin:0;padding:10px 12px 12px;font-size:13px;line-height:1.45}
++.dg .vcap a{color:var(--ac2);font-size:12px}
+ /* steps */
+ .steps{display:grid;gap:0;grid-template-columns:1fr;border:1px solid var(--line);border-radius:18px;overflow:hidden}
+ .step{padding:24px 22px;border-bottom:1px solid var(--line);background:var(--bg)}
+@@ -125,6 +132,7 @@
+  section{padding:110px 0}h2{font-size:40px}
+  .grid{grid-template-columns:repeat(3,1fr)}
+  .pf{grid-template-columns:repeat(4,1fr)}
++ .dg{grid-template-columns:repeat(3,1fr)}
+  .reel.sua{padding:44px 56px}.reel.sua .in{grid-template-columns:300px 1fr;gap:56px}.reel.sua .tx h3{font-size:36px}
+  .steps{grid-template-columns:repeat(4,1fr)}.step{border-bottom:0;border-right:1px solid var(--line)}.step:last-child{border-right:0}
+  .plans{grid-template-columns:1fr 1fr}
+@@ -174,6 +182,22 @@
+   </div>
+ </div></section>
+ 
++<section id="dalgomaebgo"><div class="wrap">
++  <p class="eyebrow">Client Channel</p>
++  <h2>달고맵고 · 고객 채널 운영 사례</h2>
++  <p class="lead">에테르가 운영을 맡은 고객 유튜브 채널입니다. 아래 영상은 그 채널에 올라 있는 영상이며, 에테르가 채널의 모든 영상을 만들었다고 하지 않습니다.</p>
++  <p class="note">채널 이름 DALGO MAEBGO. 썸네일은 유튜브가 제공하는 미리보기이고, 재생은 눌러야 시작됩니다. 삽입이 막히면 유튜브 링크로 봅니다.</p>
++  <div class="dg">
++    <div class="v rv"><div class="yt" data-yt="H9L55vqPBg4" data-title="언제나 맛있게 먹고 싶다면 김치 핫소스"><img loading="lazy" src="https://i.ytimg.com/vi/H9L55vqPBg4/hqdefault.jpg" alt="언제나 맛있게 먹고 싶다면 김치 핫소스 미리보기" /><span class="play"></span></div><p class="vcap">언제나 맛있게 먹고 싶다면 김치 핫소스<br><a href="https://www.youtube.com/watch?v=H9L55vqPBg4" target="_blank" rel="noopener">유튜브에서 보기 ↗</a></p></div>
++    <div class="v rv"><div class="yt" data-yt="v-Lhi4D9DBM" data-title="HEALTH MEETS HEAT : DALGO MAEBGO"><img loading="lazy" src="https://i.ytimg.com/vi/v-Lhi4D9DBM/hqdefault.jpg" alt="HEALTH MEETS HEAT : DALGO MAEBGO 미리보기" /><span class="play"></span></div><p class="vcap">HEALTH MEETS HEAT : DALGO MAEBGO<br><a href="https://www.youtube.com/watch?v=v-Lhi4D9DBM" target="_blank" rel="noopener">유튜브에서 보기 ↗</a></p></div>
++    <div class="v rv"><div class="yt" data-yt="E2KsdVWaZOA" data-title="Dalgo Maebgo Smash Burger | Sweet. Spicy. Kimchi #dalgomaebgo"><img loading="lazy" src="https://i.ytimg.com/vi/E2KsdVWaZOA/hqdefault.jpg" alt="Dalgo Maebgo Smash Burger 미리보기" /><span class="play"></span></div><p class="vcap">Dalgo Maebgo Smash Burger | Sweet. Spicy. Kimchi<br><a href="https://www.youtube.com/shorts/E2KsdVWaZOA" target="_blank" rel="noopener">유튜브에서 보기 ↗</a></p></div>
++    <div class="v rv"><div class="yt" data-yt="qo8KOEd-0W4" data-title="Cheesy Beef Rolls with Dalgo Maebgo | The Sauce That Cuts Through Cheese  #dalgomaebgo"><img loading="lazy" src="https://i.ytimg.com/vi/qo8KOEd-0W4/hqdefault.jpg" alt="Cheesy Beef Rolls with Dalgo Maebgo 미리보기" /><span class="play"></span></div><p class="vcap">Cheesy Beef Rolls with Dalgo Maebgo<br><a href="https://www.youtube.com/shorts/qo8KOEd-0W4" target="_blank" rel="noopener">유튜브에서 보기 ↗</a></p></div>
++    <div class="v rv"><div class="yt" data-yt="DkhVDGMPr00" data-title="Halloween Snack: Skull Cucumbers + Dalgo Maebgo"><img loading="lazy" src="https://i.ytimg.com/vi/DkhVDGMPr00/hqdefault.jpg" alt="Halloween Snack: Skull Cucumbers + Dalgo Maebgo 미리보기" /><span class="play"></span></div><p class="vcap">Halloween Snack: Skull Cucumbers + Dalgo Maebgo<br><a href="https://www.youtube.com/shorts/DkhVDGMPr00" target="_blank" rel="noopener">유튜브에서 보기 ↗</a></p></div>
++    <div class="v rv"><div class="yt" data-yt="Q2cB91Bh3RQ" data-title="Carrot ghosts. Cucumber ghosts. Then the dip."><img loading="lazy" src="https://i.ytimg.com/vi/Q2cB91Bh3RQ/hqdefault.jpg" alt="Carrot ghosts. Cucumber ghosts. Then the dip. 미리보기" /><span class="play"></span></div><p class="vcap">Carrot ghosts. Cucumber ghosts. Then the dip.<br><a href="https://www.youtube.com/shorts/Q2cB91Bh3RQ" target="_blank" rel="noopener">유튜브에서 보기 ↗</a></p></div>
++  </div>
++  <p class="note"><a href="https://www.youtube.com/channel/UCbuhFCo4kRgg3k1hZA0zkZA" target="_blank" rel="noopener">DALGO MAEBGO 유튜브 채널 ↗</a></p>
++</div></section>
++
+ <section id="service" class="alt"><div class="wrap">
+   <p class="eyebrow">What We Do</p>
+   <h2>만들고, 올리고, 관리합니다.</h2>
+@@ -304,7 +328,7 @@
+     if(el.classList.contains('on'))return;
+     var f=document.createElement('iframe');
+     f.src='https://www.youtube-nocookie.com/embed/'+el.getAttribute('data-yt')+'?autoplay=1&playsinline=1&rel=0';
+-    f.title='윤수아 날씨 영상';f.allow='accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share';
++    f.title=el.getAttribute('data-title')||'윤수아 날씨 영상';f.allow='accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share';
+     f.allowFullscreen=true;f.referrerPolicy='strict-origin-when-cross-origin';
+     el.innerHTML='';el.appendChild(f);el.classList.add('on');
+   });
+--- a/test/ether-dalgomaebgo.test.js
++++ b/test/ether-dalgomaebgo.test.js
+@@ -0,0 +1,31 @@
++const fs = require("fs");
++const path = require("path");
++const test = require("node:test");
++const assert = require("node:assert/strict");
++
++const htmlPath = process.env.ETHER_HTML || path.join(__dirname, "..", "public", "ether.html");
++const html = fs.readFileSync(htmlPath, "utf8");
++
++const ids = ["H9L55vqPBg4", "v-Lhi4D9DBM", "E2KsdVWaZOA", "qo8KOEd-0W4", "DkhVDGMPr00", "Q2cB91Bh3RQ"];
++
++test("ether homepage keeps Sua and existing work, and adds Dalgo Maebgo as a managed channel", () => {
++  assert.equal(html.includes("WORK 01"), true);
++  assert.equal(html.includes("WORK 02"), true);
++  assert.equal(html.includes("WORK 03"), true);
++  assert.equal(html.includes("nbsmZ-613h4"), true);
++  assert.equal(html.includes("/ether/sua#sponsor"), true);
++  assert.equal(html.includes("달고맵고 · 고객 채널 운영 사례"), true);
++  assert.equal(html.includes("https://www.youtube.com/channel/UCbuhFCo4kRgg3k1hZA0zkZA"), true);
++  assert.equal(html.includes("모든 영상을 만들었다고 하지 않습니다"), true);
++  const section = html.slice(html.indexOf('id="dalgomaebgo"'), html.indexOf('id="service"'));
++  assert.equal(section.includes("조회수"), false);
++  assert.equal(section.includes("성과"), false);
++  for (const id of ids) {
++    assert.equal(html.includes(`data-yt="${id}"`), true);
++    assert.equal(html.includes(`https://i.ytimg.com/vi/${id}/hqdefault.jpg`), true);
++    assert.equal(html.includes(`src="https://www.youtube-nocookie.com/embed/${id}`), false);
++  }
++  assert.equal(html.includes("https://www.youtube.com/watch?v=H9L55vqPBg4"), true);
++  assert.equal(html.includes("https://www.youtube.com/shorts/E2KsdVWaZOA"), true);
++  assert.equal((html.match(/<iframe/g) || []).length, 0);
++});
