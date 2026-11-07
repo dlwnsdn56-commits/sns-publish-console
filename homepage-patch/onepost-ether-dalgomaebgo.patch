@@ -22,15 +22,14 @@
   .reel.sua{padding:44px 56px}.reel.sua .in{grid-template-columns:300px 1fr;gap:56px}.reel.sua .tx h3{font-size:36px}
   .steps{grid-template-columns:repeat(4,1fr)}.step{border-bottom:0;border-right:1px solid var(--line)}.step:last-child{border-right:0}
   .plans{grid-template-columns:1fr 1fr}
-@@ -174,6 +182,22 @@
+@@ -174,6 +182,21 @@
    </div>
  </div></section>
  
 +<section id="dalgomaebgo"><div class="wrap">
 +  <p class="eyebrow">Client Channel</p>
 +  <h2>달고맵고 · 고객 채널 운영 사례</h2>
-+  <p class="lead">에테르가 운영을 맡은 고객 유튜브 채널입니다. 아래 영상은 그 채널에 올라 있는 영상이며, 에테르가 채널의 모든 영상을 만들었다고 하지 않습니다.</p>
-+  <p class="note">채널 이름 DALGO MAEBGO. 썸네일은 유튜브가 제공하는 미리보기이고, 재생은 눌러야 시작됩니다. 삽입이 막히면 유튜브 링크로 봅니다.</p>
++  <p class="lead">에테르가 운영을 맡은 달고맵고의 유튜브 채널입니다. 제품과 브랜드를 소개하는 영상을 만나보세요.</p>
 +  <div class="dg">
 +    <div class="v rv"><div class="yt" data-yt="H9L55vqPBg4" data-title="언제나 맛있게 먹고 싶다면 김치 핫소스"><img loading="lazy" src="https://i.ytimg.com/vi/H9L55vqPBg4/hqdefault.jpg" alt="언제나 맛있게 먹고 싶다면 김치 핫소스 미리보기" /><span class="play"></span></div><p class="vcap">언제나 맛있게 먹고 싶다면 김치 핫소스<br><a href="https://www.youtube.com/watch?v=H9L55vqPBg4" target="_blank" rel="noopener">유튜브에서 보기 ↗</a></p></div>
 +    <div class="v rv"><div class="yt" data-yt="v-Lhi4D9DBM" data-title="HEALTH MEETS HEAT : DALGO MAEBGO"><img loading="lazy" src="https://i.ytimg.com/vi/v-Lhi4D9DBM/hqdefault.jpg" alt="HEALTH MEETS HEAT : DALGO MAEBGO 미리보기" /><span class="play"></span></div><p class="vcap">HEALTH MEETS HEAT : DALGO MAEBGO<br><a href="https://www.youtube.com/watch?v=v-Lhi4D9DBM" target="_blank" rel="noopener">유튜브에서 보기 ↗</a></p></div>
@@ -45,7 +44,7 @@
  <section id="service" class="alt"><div class="wrap">
    <p class="eyebrow">What We Do</p>
    <h2>만들고, 올리고, 관리합니다.</h2>
-@@ -304,7 +328,7 @@
+@@ -304,7 +327,7 @@
      if(el.classList.contains('on'))return;
      var f=document.createElement('iframe');
      f.src='https://www.youtube-nocookie.com/embed/'+el.getAttribute('data-yt')+'?autoplay=1&playsinline=1&rel=0';
@@ -56,7 +55,7 @@
    });
 --- a/test/ether-dalgomaebgo.test.js
 +++ b/test/ether-dalgomaebgo.test.js
-@@ -0,0 +1,31 @@
+@@ -0,0 +1,33 @@
 +const fs = require("fs");
 +const path = require("path");
 +const test = require("node:test");
@@ -74,11 +73,13 @@
 +  assert.equal(html.includes("nbsmZ-613h4"), true);
 +  assert.equal(html.includes("/ether/sua#sponsor"), true);
 +  assert.equal(html.includes("달고맵고 · 고객 채널 운영 사례"), true);
++  assert.equal(html.includes("에테르가 운영을 맡은 달고맵고의 유튜브 채널입니다. 제품과 브랜드를 소개하는 영상을 만나보세요."), true);
 +  assert.equal(html.includes("https://www.youtube.com/channel/UCbuhFCo4kRgg3k1hZA0zkZA"), true);
-+  assert.equal(html.includes("모든 영상을 만들었다고 하지 않습니다"), true);
++  assert.equal(html.includes('src="/logo-aether-mark.png"'), true);
 +  const section = html.slice(html.indexOf('id="dalgomaebgo"'), html.indexOf('id="service"'));
-+  assert.equal(section.includes("조회수"), false);
-+  assert.equal(section.includes("성과"), false);
++  for (const hidden of ["모든 영상을 만들었다고", "삽입이 막히면", "썸네일은", "채널 이름", "조회수", "성과"]) {
++    assert.equal(section.includes(hidden), false, hidden);
++  }
 +  for (const id of ids) {
 +    assert.equal(html.includes(`data-yt="${id}"`), true);
 +    assert.equal(html.includes(`https://i.ytimg.com/vi/${id}/hqdefault.jpg`), true);

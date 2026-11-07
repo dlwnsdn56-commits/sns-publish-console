@@ -9,7 +9,9 @@
 - `public/ether.html`
 - `test/ether-dalgomaebgo.test.js` (새 파일)
 
-서버, 인증, 분석, 수아 상세(`public/ether-sua.html`), 주간 리포트는 이 패치에 없다.
+서버, 인증, 분석, 수아 상세(`public/ether-sua.html`), 로고 파일, 주간 리포트는 이 패치에 없다.
+
+헤더 로고 경로는 기존 `/logo-aether-mark.png` 그대로다. 내보내기는 공개 로고 PNG를 제외했으므로 패치에 로고를 넣지 않는다.
 
 ## 적용 확인만 할 때
 
