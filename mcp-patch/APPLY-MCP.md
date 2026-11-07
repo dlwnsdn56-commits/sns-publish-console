@@ -18,7 +18,7 @@ sha256sum server.js public/index.html public/ether.html
 patch --dry-run -p1 < onepost-mcp-final.patch
 ```
 
-새 npm 패키지는 없다. `package.json`과 `package-lock.json`은 바꾸지 않는다. 데이터베이스 마이그레이션은 없다. 첫 사용 때 `data/mcp.json`과 `data/mcp-audit.jsonl`이 생긴다.
+새 npm 패키지는 없다. `package.json`과 `package-lock.json`은 바꾸지 않는다. 데이터베이스 마이그레이션은 없다. 첫 사용 때 `data/mcp.json`과 `data/mcp-audit.jsonl`이 생긴다. 공식 MCP SDK는 서버 의존성이 아니다.
 
 선택 환경 변수 `ONEPOST_PUBLIC_BASE`만 승인 링크의 공개 주소를 덮어쓴다. 비우면 로컬 호스트는 요청 호스트, 그 외에는 `https://1post.kr`을 쓴다.
 
