@@ -1,0 +1,183 @@
+--- a/public/index.html
++++ b/public/index.html
+@@ -125,7 +125,7 @@
+         <a href="/scheduled" data-nav="/scheduled">예약</a>
+         <a href="/insights" data-nav="/insights">조회수</a>
+         <a href="/analysis" data-nav="/analysis">채널 분석</a>
+-        <a href="/mcp/keys">AI 연결</a>
++        <a href="/mcp/guide">AI 연결</a>
+         <a href="/trends" data-nav="/trends" id="trends-nav-link" hidden>트렌드</a>
+         <a href="/mania" data-nav="/mania" id="mania-nav-link" hidden>매니아 취향</a>
+         <a href="/billing" data-nav="/billing">요금</a>
+@@ -146,6 +146,7 @@
+       <section id="view-home" class="hidden">
+         <h2>홈</h2>
+         <p class="sub">이 가게 채널만 연결하면 됩니다. 연결 안 된 곳은 올릴 수 없습니다.</p>
++        <p class="hint"><a href="/mcp/guide">AI 연결 안내</a>에서 그록 같은 프로그램에 원포스트를 연결하는 방법을 볼 수 있습니다.</p>
+         <div class="tiles" id="home-tiles">
+           <div class="tile" data-sns="youtube">
+             <div class="tile-name">유튜브</div>
+--- a/lib/mcp.js
++++ b/lib/mcp.js
+@@ -787,6 +787,10 @@
+     res.json({ token: row });
+   });
+ 
++  app.get("/mcp/guide", (_req, res) => {
++    res.sendFile(path.join(__dirname, "..", "public", "mcp-guide.html"));
++  });
++
+   app.get("/mcp/keys", (_req, res) => {
+     res.sendFile(path.join(__dirname, "..", "public", "mcp-keys.html"));
+   });
+--- a/public/mcp-keys.html
++++ b/public/mcp-keys.html
+@@ -20,7 +20,8 @@
+ </head>
+ <body>
+ <main>
+-  <h1>AI 연결</h1>
++  <h1>AI 연결 키</h1>
++  <p><a href="/mcp/guide">안내로 돌아가기</a></p>
+   <p id="who">로그인 확인 중…</p>
+   <section>
+     <h2>연결 방법</h2>
+--- a/public/mcp-guide.html
++++ b/public/mcp-guide.html
+@@ -0,0 +1,93 @@
++<!doctype html>
++<html lang="ko">
++<head>
++<meta charset="utf-8" />
++<meta name="viewport" content="width=device-width, initial-scale=1" />
++<title>AI 연결 안내</title>
++<link rel="stylesheet" href="/styles.css" />
++<style>
++  .guide-shell { grid-template-columns: 232px minmax(0, 1fr); }
++  .addr, .guide-card code { overflow-wrap: anywhere; }
++  .client-row { flex-wrap: wrap; }
++  @media (max-width: 800px) {
++    .guide-shell { grid-template-columns: minmax(0, 1fr); }
++    .guide-shell .side { position: relative; max-height: none; min-height: 0; border-right: 0; border-bottom: 1px solid var(--line); }
++    .guide-shell .main { padding: 20px 16px 40px; }
++  }
++  .guide-card { background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 18px 18px 16px; margin: 0 0 14px; }
++  .guide-card h3 { font-size: 16px; margin-bottom: 8px; }
++  .guide-card p, .guide-card li { font-size: 14.5px; line-height: 1.6; }
++  .guide-card ul, .guide-card ol { margin: 8px 0 0 1.15em; }
++  .guide-card li + li { margin-top: 6px; }
++  .addr { margin: 8px 0 14px; padding: 12px; border-radius: 10px; background: var(--blue-soft); color: var(--blue-dark); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 14px; word-break: break-all; }
++  .guide-card .btn.primary { width: auto; min-width: 140px; padding: 0 16px; text-decoration: none; }
++  .guide-card code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; background: #f3f5f8; padding: 1px 5px; border-radius: 5px; }
++  .client-row { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; margin-bottom: 6px; }
++  .wait-note { color: var(--warn); font-size: 13px; font-weight: 700; }
++</style>
++</head>
++<body>
++<div class="app-shell guide-shell">
++  <aside class="side" aria-label="메뉴">
++    <div class="logo">
++      <img src="/logo-onepost-mark.png" alt="" width="36" height="36" />
++      <div><b>원포스트</b><span>올리기 도구</span></div>
++    </div>
++    <nav class="nav">
++      <a href="/">홈</a>
++      <a href="/post">올리기</a>
++      <a href="/jobs">작업 목록</a>
++      <a href="/scheduled">예약</a>
++      <a href="/insights">조회수</a>
++      <a href="/analysis">채널 분석</a>
++      <a class="on" href="/mcp/guide">AI 연결</a>
++      <a href="/billing">요금</a>
++      <a href="/help">사용 방법</a>
++    </nav>
++  </aside>
++  <main class="main">
++    <h2>AI 연결</h2>
++    <p class="sub">원포스트에 AI 프로그램을 연결하는 안내입니다. 프로그램을 내려받을 파일은 없습니다. 주소와 키만 있으면 됩니다.</p>
++
++    <section class="guide-card">
++      <h3>원포스트 MCP가 하는 일</h3>
++      <p>MCP는 원포스트 서버에 있는 연결 통로입니다. AI가 이 가게의 채널을 살펴보고, 올릴 글과 영상을 초안으로 준비할 수 있습니다. 초안은 아직 올라간 글이 아닙니다. 발행은 사람이 승인 화면에서 확인한 뒤에만 시작됩니다.</p>
++    </section>
++
++    <section class="guide-card">
++      <h3>연결 주소</h3>
++      <p class="addr">https://1post.kr/mcp</p>
++      <a class="btn primary" href="/mcp/keys">키 만들기</a>
++    </section>
++
++    <section class="guide-card">
++      <h3>키를 만들 때</h3>
++      <ul>
++        <li>키 전체는 만드는 순간에만 보입니다. 그 화면에서 바로 복사해 두세요.</li>
++        <li>채널 조회, 파일 올리기, 초안 작성, 작업 상태 중에서 이번에 필요한 것만 고르세요.</li>
++        <li>키로는 발행할 수 없습니다. 발행은 승인 화면의 버튼으로만 됩니다.</li>
++        <li>이 안내의 <code>opm_...</code> 는 모양만 보여 주는 가짜 값입니다. 실제 키가 아닙니다.</li>
++      </ul>
++    </section>
++
++    <section class="guide-card">
++      <h3>연결하는 순서</h3>
++      <ol>
++        <li>원포스트에 로그인한 뒤 왼쪽 메뉴의 AI 연결로 이 페이지를 엽니다.</li>
++        <li>키 만들기를 눌러 키를 만들고 복사합니다.</li>
++        <li>AI 프로그램에 연결 주소와 헤더를 넣습니다. 헤더 이름은 <code>Authorization</code>, 값은 <code>Bearer opm_...</code> 입니다.</li>
++        <li>AI에게 초안을 만들게 한 뒤, 원포스트 승인 화면에서 내용을 읽고 직접 발행을 누릅니다.</li>
++      </ol>
++    </section>
++
++    <section class="guide-card">
++      <h3>어디서 연결되나</h3>
++      <div class="client-row"><b>그록 봇의 맞춤 MCP</b><span>주소와 헤더</span></div>
++      <p>연결 주소에 <code>https://1post.kr/mcp</code> 를 넣고, 요청 헤더 <code>Authorization</code> 의 값을 <code>Bearer opm_...</code> 로 넣습니다. 2026-11-07에 이 방식으로 연결과 목록 조회가 확인되었습니다.</p>
++      <div class="client-row" style="margin-top:14px"><b>Claude 맞춤 커넥터</b><span class="wait-note">헤더가 보일 때만</span></div>
++      <p>Claude 공식 안내에는 요청 헤더로 고정 키를 넣는 방법이 있습니다. 커넥터를 추가하는 화면에 요청 헤더 칸이 보이면, 헤더 이름 <code>Authorization</code> 과 값 <code>Bearer opm_...</code> 를 넣으면 됩니다. 로그인이나 OAuth만 보이는 화면은 원포스트와 아직 연결되지 않습니다. 그 방식은 준비 중입니다. Claude에서 실제 연결과 조회는 확인하지 않았습니다.</p>
++    </section>
++  </main>
++</div>
++</body>
++</html>
+--- a/test/mcp-guide.test.js
++++ b/test/mcp-guide.test.js
+@@ -0,0 +1,40 @@
++const fs = require("fs");
++const path = require("path");
++const test = require("node:test");
++const assert = require("node:assert/strict");
++
++const root = path.join(__dirname, "..");
++const guide = fs.readFileSync(path.join(root, "public", "mcp-guide.html"), "utf8");
++const index = fs.readFileSync(path.join(root, "public", "index.html"), "utf8");
++const mcp = fs.readFileSync(path.join(root, "lib", "mcp.js"), "utf8");
++const keys = fs.readFileSync(path.join(root, "public", "mcp-keys.html"), "utf8");
++
++test("AI guide explains the real connection and does not add unverified claims", () => {
++  assert.equal(guide.includes("https://1post.kr/mcp"), true);
++  assert.equal(guide.includes('href="/mcp/keys"'), true);
++  assert.equal(guide.includes("opm_..."), true);
++  assert.equal(guide.includes("만드는 순간에만"), true);
++  assert.equal(guide.includes("필요한 것만"), true);
++  assert.equal(guide.includes("승인 화면에서 확인한 뒤에만"), true);
++  assert.equal(guide.includes("2026-11-07"), true);
++  assert.equal(guide.includes("Authorization"), true);
++  assert.equal(guide.includes("준비 중"), true);
++  assert.equal(guide.includes("확인하지 않았습니다"), true);
++  for (const banned of ["공식 등재", "절감", "경쟁사", "%", "1위", "모든 AI"]) {
++    assert.equal(guide.includes(banned), false, banned);
++  }
++  assert.equal(guide.includes("opm_live"), false);
++  assert.equal(guide.includes("sk-"), false);
++});
++
++test("logged-in navigation points at the guide, and the server route only serves the page", () => {
++  assert.equal(index.includes('href="/mcp/guide">AI 연결</a>'), true);
++  assert.equal(index.includes('href="/mcp/keys"'), false);
++  assert.equal(index.includes('href="/mcp/guide">AI 연결 안내</a>'), true);
++  assert.equal(mcp.includes('app.get("/mcp/guide"'), true);
++  assert.equal(mcp.includes('public", "mcp-guide.html"'), true);
++  assert.equal(keys.includes('href="/mcp/guide"'), true);
++  const route = mcp.slice(mcp.indexOf('app.get("/mcp/guide"'), mcp.indexOf('app.get("/mcp/keys"'));
++  assert.equal(route.includes("createPublishJob"), false);
++  assert.equal(route.includes("runPublish"), false);
++});
