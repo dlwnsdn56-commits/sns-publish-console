@@ -1,0 +1,456 @@
+--- a/server.js
++++ b/server.js
+@@ -26,6 +26,7 @@
+ const { mountOnepostMcp } = require("./lib/mcp");
+ const { buildChannelStatus } = require("./lib/mcp-channels");
+ const { createMcpStore } = require("./lib/mcp-store");
++const { mountAgencyBilling } = require("./lib/agency-billing");
+ 
+ const PORT = Number(process.env.PORT || 3000);
+ const HOST = process.env.HOST || "0.0.0.0";
+@@ -4488,6 +4489,18 @@
+   findJobByDraftId: (draftId) => store.getJobs().find((job) => job.mcpDraftId === draftId) || null,
+ });
+ 
++mountAgencyBilling(app, {
++  getSession,
++  isAdmin: (email) => isAdminEmail(email),
++  getToolBillingKey: (email) => {
++    try {
++      const rec = billingStore.getOrCreate(email);
++      return (rec && (rec.customerUid || rec.customerKey)) || null;
++    } catch (_err) {
++      return null;
++    }
++  },
++});
++
+ app.get("*", (req, res, next) => {
+   if (req.path.startsWith("/api/")) return next();
+   res.sendFile(path.join(__dirname, "public", "index.html"));
+--- a/lib/agency-billing.js
++++ b/lib/agency-billing.js
+@@ -0,0 +1,321 @@
++const crypto = require("crypto");
++const fs = require("fs");
++const path = require("path");
++
++const AGENCY_AMOUNT_KRW = 880000;
++const MONTHLY_GRANT = 10;
++const MIN_PAID_MONTHS = 3;
++const RETRY_MS = 7 * 24 * 60 * 60 * 1000;
++
++function billingEnabled(env) {
++  return String((env || process.env).AGENCY_BILLING_ENABLED || "") === "1";
++}
++
++function periodKey(date) {
++  const shifted = new Date(date.getTime() + 9 * 60 * 60 * 1000);
++  return shifted.toISOString().slice(0, 7);
++}
++
++function addMonths(period, count) {
++  const [year, month] = period.split("-").map(Number);
++  const next = new Date(Date.UTC(year, month - 1 + count, 1));
++  return next.toISOString().slice(0, 7);
++}
++
++function createAgencyStore(options) {
++  const file = (options && options.file) || path.join(process.cwd(), "data", "agency-billing.json");
++  let cached = null;
++
++  function empty() {
++    return { subscriptions: [], events: [] };
++  }
++
++  function load() {
++    if (cached) return cached;
++    try {
++      cached = JSON.parse(fs.readFileSync(file, "utf8"));
++    } catch (err) {
++      if (!err || err.code !== "ENOENT") throw err;
++      cached = empty();
++    }
++    cached.subscriptions = cached.subscriptions || [];
++    cached.events = cached.events || [];
++    return cached;
++  }
++
++  function save() {
++    fs.mkdirSync(path.dirname(file), { recursive: true });
++    const tmp = file + "." + process.pid + ".tmp";
++    fs.writeFileSync(tmp, JSON.stringify(load()));
++    fs.renameSync(tmp, file);
++  }
++
++  return { load, save, file };
++}
++
++function createAgencyBilling(options) {
++  const opts = options || {};
++  const store = opts.store || createAgencyStore(opts);
++  const nowFn = opts.now || (() => new Date());
++  const charge = opts.charge || (async () => ({ ok: false, error: "결제 대행 호출이 연결되지 않았습니다." }));
++
++  function find(id) {
++    return store.load().subscriptions.find((item) => item.id === id) || null;
++  }
++
++  function openPeriod(sub, period) {
++    const prev = sub.periods[sub.periods.length - 1];
++    let carryIn = 0;
++    if (prev) {
++      const usedFromGrant = Math.max(0, prev.used - prev.carryIn);
++      carryIn = Math.max(0, prev.grant - usedFromGrant);
++    }
++    sub.periods.push({ period, grant: MONTHLY_GRANT, carryIn, used: 0 });
++  }
++
++  async function chargePeriod(sub, period) {
++    const paid = sub.charges.find((item) => item.period === period && item.status === "paid");
++    if (paid) return { ok: true, duplicate: true, charge: paid };
++    const result = await charge({
++      customerUid: sub.customerUid,
++      amount: AGENCY_AMOUNT_KRW,
++      merchantUid: sub.id + ":" + period,
++      name: "영상 제작 대행 월 10편",
++    });
++    if (!result || result.ok !== true) {
++      if (!sub.failedAt) sub.failedAt = nowFn().toISOString();
++      sub.status = "past_due";
++      store.save();
++      return { ok: false, error: (result && result.error) || "결제 실패" };
++    }
++    sub.charges.push({
++      period,
++      amount: AGENCY_AMOUNT_KRW,
++      status: "paid",
++      at: nowFn().toISOString(),
++      merchantUid: sub.id + ":" + period,
++    });
++    sub.paidMonths += 1;
++    sub.failedAt = null;
++    sub.status = sub.cancelAtPeriodEnd ? "canceling" : "active";
++    openPeriod(sub, period);
++    store.save();
++    return { ok: true, duplicate: false };
++  }
++
++  async function runScheduler(at) {
++    const now = at || nowFn();
++    const period = periodKey(now);
++    const summary = { charged: 0, skipped: 0, suspended: 0 };
++    for (const sub of store.load().subscriptions) {
++      if (sub.status === "suspended" || sub.status === "canceled") {
++        summary.skipped += 1;
++        continue;
++      }
++      if (sub.cancelAtPeriodEnd && sub.paidMonths >= MIN_PAID_MONTHS && sub.charges.some((item) => item.period === period && item.status === "paid")) {
++        sub.status = "canceled";
++        summary.skipped += 1;
++        continue;
++      }
++      if (sub.failedAt && now.getTime() - Date.parse(sub.failedAt) > RETRY_MS) {
++        sub.status = "suspended";
++        summary.suspended += 1;
++        continue;
++      }
++      const outcome = await chargePeriod(sub, period);
++      if (outcome.ok && !outcome.duplicate) summary.charged += 1;
++      else summary.skipped += 1;
++    }
++    store.save();
++    return summary;
++  }
++
++  function subscribe(input) {
++    const customerUid = String((input && input.customerUid) || "");
++    if (!customerUid) {
++      const err = new Error("원포스트 도구에 등록된 카드가 없습니다.");
++      err.status = 400;
++      throw err;
++    }
++    const sub = {
++      id: crypto.randomUUID(),
++      email: String(input.email || "").trim().toLowerCase(),
++      customerUid,
++      amount: AGENCY_AMOUNT_KRW,
++      status: "active",
++      paidMonths: 0,
++      failedAt: null,
++      cancelAtPeriodEnd: false,
++      charges: [],
++      periods: [],
++      createdAt: nowFn().toISOString(),
++    };
++    store.load().subscriptions.push(sub);
++    store.save();
++    return publicSub(sub);
++  }
++
++  function requestCancel(id, email) {
++    const sub = find(id);
++    if (!sub || sub.email !== String(email || "").trim().toLowerCase()) {
++      const err = new Error("구독을 찾을 수 없습니다.");
++      err.status = 404;
++      throw err;
++    }
++    if (sub.paidMonths < MIN_PAID_MONTHS) {
++      const err = new Error("3개월 전에는 해지 신청을 받지 않음");
++      err.status = 409;
++      throw err;
++    }
++    sub.cancelAtPeriodEnd = true;
++    store.save();
++    return publicSub(sub);
++  }
++
++  function produce(id, count) {
++    const sub = find(id);
++    const period = sub && sub.periods[sub.periods.length - 1];
++    const n = Number(count);
++    if (!period || !Number.isInteger(n) || n < 1) {
++      const err = new Error("제작할 편수가 없습니다.");
++      err.status = 400;
++      throw err;
++    }
++    const room = period.carryIn + period.grant - period.used;
++    if (n > room) {
++      const err = new Error("남은 편수가 부족합니다.");
++      err.status = 409;
++      throw err;
++    }
++    period.used += n;
++    store.save();
++    return publicSub(sub);
++  }
++
++  function applyWebhook(event, signature, secret) {
++    const expected = crypto.createHmac("sha256", secret).update(JSON.stringify(event)).digest("hex");
++    const left = Buffer.from(String(signature || ""));
++    const right = Buffer.from(expected);
++    if (left.length !== right.length || !crypto.timingSafeEqual(left, right)) {
++      const err = new Error("서명이 올바르지 않습니다.");
++      err.status = 401;
++      throw err;
++    }
++    if (Number(event.amount) !== AGENCY_AMOUNT_KRW) {
++      const err = new Error("금액이 월 88만원과 다릅니다.");
++      err.status = 400;
++      throw err;
++    }
++    const data = store.load();
++    if (data.events.includes(event.eventId)) return { duplicate: true };
++    data.events.push(event.eventId);
++    const sub = find(event.subscriptionId);
++    if (!sub) {
++      const err = new Error("구독을 찾을 수 없습니다.");
++      err.status = 404;
++      throw err;
++    }
++    if (event.status === "paid") {
++      if (!sub.charges.some((item) => item.period === event.period && item.status === "paid")) {
++        sub.charges.push({ period: event.period, amount: AGENCY_AMOUNT_KRW, status: "paid", at: nowFn().toISOString(), merchantUid: event.eventId });
++        sub.paidMonths += 1;
++        sub.failedAt = null;
++        sub.status = "active";
++        if (!sub.periods.some((item) => item.period === event.period)) openPeriod(sub, event.period);
++      }
++    } else {
++      if (!sub.failedAt) sub.failedAt = nowFn().toISOString();
++      sub.status = "past_due";
++    }
++    store.save();
++    return { duplicate: false };
++  }
++
++  function publicSub(sub) {
++    const period = sub.periods[sub.periods.length - 1] || null;
++    return {
++      id: sub.id,
++      email: sub.email,
++      amount: sub.amount,
++      status: sub.status,
++      paidMonths: sub.paidMonths,
++      cancelAtPeriodEnd: sub.cancelAtPeriodEnd,
++      failedAt: sub.failedAt,
++      available: period ? period.carryIn + period.grant - period.used : 0,
++      carryIn: period ? period.carryIn : 0,
++    };
++  }
++
++  return {
++    AGENCY_AMOUNT_KRW,
++    subscribe,
++    requestCancel,
++    produce,
++    runScheduler,
++    chargePeriod,
++    applyWebhook,
++    list: () => store.load().subscriptions.map(publicSub),
++    publicSub,
++  };
++}
++
++function mountAgencyBilling(app, deps) {
++  const on = billingEnabled(deps.env || process.env);
++  if (!on) {
++    const off = (_req, res) => res.status(404).json({ error: "대행 자동결제는 꺼져 있습니다." });
++    app.use("/api/agency-billing", off);
++    app.post("/hooks/agency-billing", off);
++    app.get("/admin/agency-billing", off);
++    return { enabled: false };
++  }
++  const billing = deps.billing || createAgencyBilling(deps);
++  function user(req) {
++    const session = deps.getSession(req);
++    if (!session || !session.email) return null;
++    return session;
++  }
++  app.post("/api/agency-billing/subscriptions", async (req, res) => {
++    const session = user(req);
++    if (!session) return res.status(401).json({ error: "로그인이 필요합니다." });
++    try {
++      const customerUid = await deps.getToolBillingKey(session.email);
++      const sub = billing.subscribe({ email: session.email, customerUid });
++      res.status(201).json({ subscription: sub });
++    } catch (err) {
++      res.status(err.status || 400).json({ error: err.message });
++    }
++  });
++  app.post("/api/agency-billing/subscriptions/:id/cancel", (req, res) => {
++    const session = user(req);
++    if (!session) return res.status(401).json({ error: "로그인이 필요합니다." });
++    try {
++      res.json({ subscription: billing.requestCancel(req.params.id, session.email) });
++    } catch (err) {
++      res.status(err.status || 400).json({ error: err.message });
++    }
++  });
++  app.get("/admin/agency-billing", (req, res) => {
++    const session = user(req);
++    if (!session || !deps.isAdmin(session.email)) return res.status(404).type("html").send("없음");
++    const rows = billing.list().map((item) => "<li>" + item.email + " · " + item.status + " · 남은 " + item.available + "편 · 결제 " + item.paidMonths + "회</li>").join("");
++    res.type("html").send("<!doctype html><html lang=\"ko\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>대행 구독</title></head><body><h1>영상 제작 대행 구독</h1><p>월 88만원, 부가세 포함. 도구와 같은 카드.</p><ul>" + rows + "</ul></body></html>");
++  });
++  app.post("/hooks/agency-billing", (req, res) => {
++    try {
++      const result = billing.applyWebhook(req.body || {}, req.get("x-portone-signature"), deps.webhookSecret || process.env.PORTONE_WEBHOOK_SECRET || "");
++      res.json(result);
++    } catch (err) {
++      res.status(err.status || 400).json({ error: err.message });
++    }
++  });
++  return { enabled: true, billing };
++}
++
++module.exports = {
++  AGENCY_AMOUNT_KRW,
++  billingEnabled,
++  periodKey,
++  addMonths,
++  createAgencyBilling,
++  mountAgencyBilling,
++};
+--- a/test/agency-billing.test.js
++++ b/test/agency-billing.test.js
+@@ -0,0 +1,99 @@
++const fs = require("fs");
++const os = require("os");
++const path = require("path");
++const test = require("node:test");
++const assert = require("node:assert/strict");
++const express = require("express");
++const crypto = require("crypto");
++const { createAgencyBilling, mountAgencyBilling, AGENCY_AMOUNT_KRW } = require("../lib/agency-billing");
++
++function harness(now) {
++  const calls = [];
++  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agency-bill-"));
++  const billing = createAgencyBilling({
++    file: path.join(dir, "agency-billing.json"),
++    now: () => now,
++    charge: async (order) => {
++      calls.push(order);
++      return calls.fail ? { ok: false, error: "카드 거절" } : { ok: true };
++    },
++  });
++  return { billing, calls, dir };
++}
++
++test("monthly charge is 880000, idempotent, and reuses the tool card", async () => {
++  const now = new Date("2026-11-10T01:00:00.000Z");
++  const { billing, calls } = harness(now);
++  const sub = billing.subscribe({ email: "owner@example.test", customerUid: "cus_tool_1" });
++  assert.equal(sub.amount, 880000);
++  assert.equal(AGENCY_AMOUNT_KRW, 880000);
++  assert.throws(() => billing.subscribe({ email: "owner@example.test", customerUid: "" }), /카드가 없습니다/);
++  await billing.runScheduler(now);
++  await billing.runScheduler(now);
++  assert.equal(calls.length, 1);
++  assert.equal(calls[0].customerUid, "cus_tool_1");
++  assert.equal(calls[0].amount, 880000);
++  assert.equal(billing.list()[0].available, 10);
++});
++
++test("failed payment retries for 7 days then suspends without another penalty", async () => {
++  const start = new Date("2026-11-01T00:00:00.000Z");
++  const { billing, calls } = harness(start);
++  calls.fail = true;
++  const sub = billing.subscribe({ email: "owner@example.test", customerUid: "cus_tool_1" });
++  await billing.runScheduler(start);
++  await billing.runScheduler(new Date(start.getTime() + 6 * 24 * 60 * 60 * 1000));
++  assert.equal(calls.length, 2);
++  assert.equal(billing.list()[0].status, "past_due");
++  await billing.runScheduler(new Date(start.getTime() + 8 * 24 * 60 * 60 * 1000));
++  assert.equal(calls.length, 2);
++  assert.equal(billing.list()[0].status, "suspended");
++  assert.equal(billing.requestCancel.length, 2);
++  assert.throws(() => billing.requestCancel(sub.id, "owner@example.test"), /3개월 전에는 해지 신청을 받지 않음/);
++});
++
++test("cancellation stays closed for three paid months and carries unused videos only one month", async () => {
++  let now = new Date("2026-01-15T00:00:00.000Z");
++  const { billing } = harness(now);
++  const sub = billing.subscribe({ email: "owner@example.test", customerUid: "cus_tool_1" });
++  await billing.runScheduler(now);
++  billing.produce(sub.id, 4);
++  now = new Date("2026-02-15T00:00:00.000Z");
++  await billing.runScheduler(now);
++  assert.equal(billing.list()[0].carryIn, 6);
++  assert.equal(billing.list()[0].available, 16);
++  billing.produce(sub.id, 1);
++  now = new Date("2026-03-15T00:00:00.000Z");
++  await billing.runScheduler(now);
++  assert.equal(billing.list()[0].carryIn, 10);
++  assert.equal(billing.list()[0].paidMonths, 3);
++  const canceled = billing.requestCancel(sub.id, "owner@example.test");
++  assert.equal(canceled.cancelAtPeriodEnd, true);
++  assert.equal(canceled.penalty, undefined);
++});
++
++test("webhook checks signature and amount once, and the flag hides every route", async () => {
++  const { billing } = harness(new Date("2026-11-10T00:00:00.000Z"));
++  const sub = billing.subscribe({ email: "owner@example.test", customerUid: "cus_tool_1" });
++  const event = { eventId: "evt_1", subscriptionId: sub.id, period: "2026-11", amount: 880000, status: "paid" };
++  const secret = "test-secret";
++  const signature = crypto.createHmac("sha256", secret).update(JSON.stringify(event)).digest("hex");
++  assert.throws(() => billing.applyWebhook(event, "00", secret), /서명/);
++  const badAmountSig = crypto.createHmac("sha256", secret).update(JSON.stringify({ ...event, eventId: "evt_2", amount: 9900 })).digest("hex");
++  assert.throws(() => billing.applyWebhook({ ...event, eventId: "evt_2", amount: 9900 }, badAmountSig, secret), /88만원/);
++  assert.deepEqual(billing.applyWebhook(event, signature, secret), { duplicate: false });
++  assert.deepEqual(billing.applyWebhook(event, signature, secret), { duplicate: true });
++  assert.equal(billing.list()[0].paidMonths, 1);
++
++  const app = express();
++  app.use(express.json());
++  const mounted = mountAgencyBilling(app, { env: {} });
++  assert.equal(mounted.enabled, false);
++  const server = await new Promise((resolve) => {
++    const listening = app.listen(0, "127.0.0.1", () => resolve(listening));
++  });
++  const port = server.address().port;
++  const res = await fetch("http://127.0.0.1:" + port + "/api/agency-billing/subscriptions", { method: "POST" });
++  assert.equal(res.status, 404);
++  await new Promise((resolve) => server.close(resolve));
++});
