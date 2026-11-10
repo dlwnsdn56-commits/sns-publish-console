@@ -1,0 +1,64 @@
+diff -u -r a/public/agency.html b/public/agency.html
+--- a/public/agency.html	2026-11-10 07:30:12.928882268 +0000
++++ b/public/agency.html	2026-11-10 07:30:12.928882268 +0000
+@@ -570,7 +570,7 @@
+             <li>영상 제작 대행 월 10편 80만원 (VAT 별도) · 월 구독</li>
+             <li>기획 · AI 영상 제작 · 원포스트로 SNS 업로드 관리</li>
+             <li>남은 편수는 다음 달까지만 이월</li>
+-            <li>최소 3개월 유지 후 해지</li>
++            <li>해지 신청은 언제든 가능, 최소 3개월 이용기간이 끝나는 달 말에 해지</li>
+             <li>카드 자동결제(준비 중). 지금은 이 페이지에서 결제되지 않음</li>
+           </ul>
+         </article>
+@@ -617,7 +617,7 @@
+       </details>
+       <details>
+         <summary>해지와 환불은 어떻게 되나요?</summary>
+-        <p>최소 3개월을 유지한 뒤에 해지할 수 있습니다. 카드 자동결제는 준비 중이며, 지금은 이 페이지에서 결제되지 않습니다. 환불 조건은 이 안내에 없습니다.</p>
++        <p>해지 신청은 언제든 가능, 최소 3개월 이용기간이 끝나는 달 말에 해지. 카드 자동결제는 준비 중이며, 지금은 이 페이지에서 결제되지 않습니다. 환불 조건은 이 안내에 없습니다.</p>
+       </details>
+     </section>
+ 
+diff -u -r a/public/ether.html b/public/ether.html
+--- a/public/ether.html	2026-11-10 07:30:12.928882268 +0000
++++ b/public/ether.html	2026-11-10 07:30:12.928882268 +0000
+@@ -246,11 +246,11 @@
+       <div class="tag">영상 제작 대행</div>
+       <h3>월 10편</h3>
+       <p class="q">영상 제작 대행 월 10편 80만원 (VAT 별도) · 월 구독</p>
+-      <ul><li>기획 · AI 영상 제작</li><li>원포스트로 SNS 업로드 관리</li><li>제품·현장 사진 기반 숏폼 제작</li><li>남은 편수는 다음 달까지만 이월</li><li>최소 3개월 유지 후 해지</li><li>카드 자동결제(준비 중). 지금은 이 페이지에서 결제되지 않음</li><li>원포스트 도구 요금과는 별도</li></ul>
++      <ul><li>기획 · AI 영상 제작</li><li>원포스트로 SNS 업로드 관리</li><li>제품·현장 사진 기반 숏폼 제작</li><li>남은 편수는 다음 달까지만 이월</li><li>해지 신청은 언제든 가능, 최소 3개월 이용기간이 끝나는 달 말에 해지</li><li>카드 자동결제(준비 중). 지금은 이 페이지에서 결제되지 않음</li><li>원포스트 도구 요금과는 별도</li></ul>
+       <div class="price">80만원<small> (VAT 별도) · 월</small></div>
+     </div>
+   </div>
+-  <p class="note">* 영상 제작 대행 월 10편 80만원 (VAT 별도) · 월 구독. 남은 편수는 다음 달까지만 이월됩니다. 최소 3개월을 유지한 뒤에 해지할 수 있습니다. 카드 자동결제는 준비 중이며, 지금은 이 페이지에서 결제되지 않습니다. 셀프 콘솔 구독(월 9,900원)과는 별도입니다.</p>
++  <p class="note">* 영상 제작 대행 월 10편 80만원 (VAT 별도) · 월 구독. 남은 편수는 다음 달까지만 이월됩니다. 해지 신청은 언제든 가능, 최소 3개월 이용기간이 끝나는 달 말에 해지. 카드 자동결제는 준비 중이며, 지금은 이 페이지에서 결제되지 않습니다. 셀프 콘솔 구독(월 9,900원)과는 별도입니다.</p>
+ </div></section>
+ 
+ <section class="alt"><div class="wrap">
+diff -u -r a/public/index.html b/public/index.html
+--- a/public/index.html	2026-11-10 07:30:12.928882268 +0000
++++ b/public/index.html	2026-11-10 07:30:12.928882268 +0000
+@@ -947,7 +947,7 @@
+               <li>영상 제작 대행 월 10편 80만원 (VAT 별도) · 월 구독</li>
+               <li>기획 · AI 영상 제작 · 원포스트로 SNS 업로드 관리</li>
+               <li>남은 편수는 다음 달까지만 이월</li>
+-              <li>최소 3개월 유지 후 해지</li>
++              <li>해지 신청은 언제든 가능, 최소 3개월 이용기간이 끝나는 달 말에 해지</li>
+               <li>카드 자동결제(준비 중). 지금은 이 화면에서 결제되지 않음</li>
+             </ul>
+             <p class="ad-card-fine">원포스트 도구 요금과는 별도입니다. 콘솔 구독(월 9,900원)과는 다른 상품입니다.</p>
+diff -u -r a/test/agency-rules.test.js b/test/agency-rules.test.js
+--- a/test/agency-rules.test.js	2026-11-10 07:30:12.928882268 +0000
++++ b/test/agency-rules.test.js	2026-11-10 07:30:12.932882239 +0000
+@@ -11,7 +11,9 @@
+ test("agency pages state rollover, three-month minimum, and unpaid auto-charge", () => {
+   for (const text of files) {
+     assert.equal(text.includes("다음 달까지만 이월"), true);
+-    assert.equal(text.includes("최소 3개월"), true);
++    assert.equal(text.includes("해지 신청은 언제든 가능, 최소 3개월 이용기간이 끝나는 달 말에 해지"), true);
++    assert.equal(text.includes("최소 3개월 유지 후 해지"), false);
++    assert.equal(text.includes("최소 3개월을 유지한 뒤에 해지할 수 있습니다"), false);
+     assert.equal(text.includes("자동결제(준비 중)"), true);
+     assert.equal(text.includes("전액 환불"), false);
+     assert.equal(text.includes("위약금"), false);
