@@ -1,0 +1,71 @@
+--- a/public/terms.html
++++ b/public/terms.html
+@@ -52,6 +52,18 @@
+   </ul>
+   <p>영상 제작·SNS 대행은 이 월 구독 환불 대상이 아닙니다.</p>
+ 
++  <h2>3-2. 영상 제작 대행 (초안, 대표 확인 전)</h2>
++  <p>이 절은 법률 자문이 아닙니다. 대표 확인 전에는 효력이 있는 약관이 아닙니다.</p>
++  <ul>
++    <li>상품은 영상 제작 대행 월 10편 80만원 (VAT 별도) · 월 구독입니다. 원포스트 콘솔 월 9,900원과는 다른 상품입니다.</li>
++    <li>청구액은 월 88만원이며 부가세가 포함된 금액입니다. 원포스트 도구와 같은 카드로 매달 청구합니다.</li>
++    <li>결제에 실패하면 7일 동안 다시 시도합니다.</li>
++    <li>그달에 쓰지 않은 편수는 다음 달까지만 이월됩니다.</li>
++    <li>최소 3개월을 유지한 뒤에 해지할 수 있습니다. 3개월 전에는 해지 신청을 받지 않습니다. 그 기간의 위약금 금액은 정하지 않았습니다.</li>
++    <li>환불은 결제일로부터 7일 이내이고, 그달 영상을 한 편도 만들지 않은 경우에만 그달 금액을 전액 환불합니다. 그 외에는 환불하지 않습니다.</li>
++  </ul>
++  <p>전자상거래법에서 확인할 점: 가격·기간·해지 방법을 계약 전에 보여 줬는지, 영상 제공이 시작된 뒤 청약철회가 제한되는 고지와 동의가 필요한지, 자동결제 고지와 위약금이 과하지 않은지. 조문 적용은 법률 자문으로 확인해야 합니다.</p>
++
+   <h2>4. 계정과 이용</h2>
+   <p>Google, 카카오, Facebook, 네이버로 로그인할 수 있습니다. 앱 심사 전에는 일부 로그인이 테스터만 될 수 있습니다. 애플 로그인은 없습니다.</p>
+   <p>채널 연결은 가게마다 따로입니다. 계정과 비밀번호, 연결된 SNS의 보안은 이용자가 관리합니다.</p>
+--- a/public/refund.html
++++ b/public/refund.html
+@@ -57,7 +57,19 @@
+   <h2>6. 신청 방법</h2>
+   <p><a href="mailto:dlwnsdn56@gmail.com">dlwnsdn56@gmail.com</a>으로 결제일, 금액, 로그인 이메일을 적어 보내 주세요. 환불은 결제한 수단으로 취소하는 것이 원칙이며, 카드사·PG사(포트원 연계) 처리에 영업일 기준 며칠이 걸릴 수 있습니다.</p>
+ 
+-  <p class="muted">시행일: 2026년 9월 3일</p>
++  <h2>7. 영상 제작 대행 (초안, 대표 확인 전)</h2>
++  <p>이 절은 법률 자문이 아닙니다. 대표 확인 전에는 효력이 있는 환불 정책이 아닙니다. 위의 1~6절은 콘솔 월 9,900원에만 적용됩니다.</p>
++  <ul>
++    <li>상품은 영상 제작 대행 월 10편 80만원 (VAT 별도) · 월 구독입니다.</li>
++    <li>청구액은 월 88만원이며 부가세가 포함된 금액입니다. 원포스트 도구와 같은 카드로 매달 청구합니다.</li>
++    <li>결제에 실패하면 7일 동안 다시 시도합니다.</li>
++    <li>그달에 쓰지 않은 편수는 다음 달까지만 이월됩니다.</li>
++    <li>최소 3개월을 유지한 뒤에 해지할 수 있습니다. 3개월 전에는 해지 신청을 받지 않습니다. 위약금 금액은 정하지 않았습니다.</li>
++    <li>환불은 결제일로부터 7일 이내이고, 그달 영상을 한 편도 만들지 않은 경우에만 그달 금액을 전액 환불합니다. 그 외에는 환불하지 않습니다.</li>
++  </ul>
++  <p>전자상거래법에서 확인할 점: 가격·기간·해지 방법의 사전 표시, 영상 제공이 시작된 뒤의 청약철회 제한 고지, 자동결제 고지, 위약금의 한도. 조문 적용은 법률 자문으로 확인해야 합니다.</p>
++
++  <p class="muted">시행일: 2026년 9월 3일. 대행 절은 초안이며 시행일이 없습니다.</p>
+ 
+ <section class="company-legal">
+   <p><strong>상호 에테르</strong> · 원포스트(1post.kr) 운영</p>
+--- a/test/agency-terms.test.js
++++ b/test/agency-terms.test.js
+@@ -0,0 +1,24 @@
++const fs = require("fs");
++const path = require("path");
++const test = require("node:test");
++const assert = require("node:assert/strict");
++
++const terms = fs.readFileSync(path.join(__dirname, "..", "public", "terms.html"), "utf8");
++const refund = fs.readFileSync(path.join(__dirname, "..", "public", "refund.html"), "utf8");
++
++test("draft agency clauses keep tool terms and leave refund undecided", () => {
++  for (const text of [terms, refund]) {
++    assert.equal(text.includes("법률 자문이 아닙니다"), true);
++    assert.equal(text.includes("다음 달까지만 이월"), true);
++    assert.equal(text.includes("최소 3개월"), true);
++    assert.equal(text.includes("월 88만원"), true);
++    assert.equal(text.includes("7일 동안 다시 시도"), true);
++    assert.equal(text.includes("3개월 전에는 해지 신청을 받지 않습니다"), true);
++    assert.equal(text.includes("한 편도 만들지 않은 경우"), true);
++    assert.equal(text.includes("그 외에는 환불하지 않습니다"), true);
++    assert.equal(text.includes("［미정］"), false);
++    assert.equal(text.includes("전자상거래법"), true);
++  }
++  assert.equal(terms.includes("출시 요금은 월 9,900원입니다."), true);
++  assert.equal(refund.includes("출시 요금 월 9,900원"), true);
++});
