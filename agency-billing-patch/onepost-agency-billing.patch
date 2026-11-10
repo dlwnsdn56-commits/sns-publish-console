@@ -30,7 +30,7 @@
    res.sendFile(path.join(__dirname, "public", "index.html"));
 --- a/lib/agency-billing.js
 +++ b/lib/agency-billing.js
-@@ -0,0 +1,329 @@
+@@ -0,0 +1,336 @@
 +const crypto = require("crypto");
 +const fs = require("fs");
 +const path = require("path");
@@ -107,6 +107,9 @@
 +  }
 +
 +  async function chargePeriod(sub, period) {
++    if (sub.status === "terminated" || sub.status === "canceled") {
++      return { ok: false, error: "종료된 구독은 청구하지 않습니다." };
++    }
 +    const paid = sub.charges.find((item) => item.period === period && item.status === "paid");
 +    if (paid) return { ok: true, duplicate: true, charge: paid };
 +    const result = await charge({
@@ -143,9 +146,9 @@
 +  async function runScheduler(at) {
 +    const now = at || nowFn();
 +    const period = periodKey(now);
-+    const summary = { charged: 0, skipped: 0, suspended: 0 };
++    const summary = { charged: 0, skipped: 0, terminated: 0 };
 +    for (const sub of store.load().subscriptions) {
-+      if (sub.status === "suspended" || sub.status === "canceled") {
++      if (sub.status === "terminated" || sub.status === "canceled") {
 +        summary.skipped += 1;
 +        continue;
 +      }
@@ -155,8 +158,8 @@
 +        continue;
 +      }
 +      if (sub.failedAt && now.getTime() - Date.parse(sub.failedAt) > RETRY_MS) {
-+        sub.status = "suspended";
-+        summary.suspended += 1;
++        sub.status = "terminated";
++        summary.terminated += 1;
 +        continue;
 +      }
 +      const outcome = await chargePeriod(sub, period);
@@ -199,6 +202,8 @@
 +      err.status = 404;
 +      throw err;
 +    }
++    // TODO: 해지 시 미착수 편 정산(2-C). 정산 방법과 금액은 정해지지 않았다. 환불 규칙과 충돌하므로 여기서 금액을 계산하지 않는다.
++    // TODO: 회사 사정으로 월 10편을 만들지 못하면 이용 기간을 늘린다(6-A). 연장 길이와 추가 청구 여부는 정하지 않았다. 여기서 기간을 계산하지 않는다.
 +    sub.cancelRequestedAt = nowFn().toISOString();
 +    sub.cancelAtPeriodEnd = true;
 +    if (sub.paidMonths >= MIN_PAID_MONTHS) {
@@ -259,10 +264,12 @@
 +        sub.charges.push({ period: event.period, amount: AGENCY_AMOUNT_KRW, status: "paid", at: nowFn().toISOString(), merchantUid: event.eventId });
 +        sub.paidMonths += 1;
 +        sub.failedAt = null;
-+        sub.status = "active";
-+        if (!sub.periods.some((item) => item.period === event.period)) openPeriod(sub, event.period);
++        if (sub.status !== "terminated" && sub.status !== "canceled") {
++          sub.status = "active";
++          if (!sub.periods.some((item) => item.period === event.period)) openPeriod(sub, event.period);
++        }
 +      }
-+    } else {
++    } else if (sub.status !== "terminated" && sub.status !== "canceled") {
 +      if (!sub.failedAt) sub.failedAt = nowFn().toISOString();
 +      sub.status = "past_due";
 +    }
@@ -362,7 +369,7 @@
 +};
 --- a/test/agency-billing.test.js
 +++ b/test/agency-billing.test.js
-@@ -0,0 +1,120 @@
+@@ -0,0 +1,133 @@
 +const fs = require("fs");
 +const os = require("os");
 +const path = require("path");
@@ -401,7 +408,7 @@
 +  assert.equal(billing.list()[0].available, 10);
 +});
 +
-+test("failed payment retries for 7 days then suspends without another penalty", async () => {
++test("failed payment retries for 7 days then terminates and stops later charges", async () => {
 +  const start = new Date("2026-11-01T00:00:00.000Z");
 +  const { billing, calls } = harness(start);
 +  calls.fail = true;
@@ -410,12 +417,25 @@
 +  await billing.runScheduler(new Date(start.getTime() + 6 * 24 * 60 * 60 * 1000));
 +  assert.equal(calls.length, 2);
 +  assert.equal(billing.list()[0].status, "past_due");
-+  await billing.runScheduler(new Date(start.getTime() + 8 * 24 * 60 * 60 * 1000));
++  const ended = await billing.runScheduler(new Date(start.getTime() + 8 * 24 * 60 * 60 * 1000));
 +  assert.equal(calls.length, 2);
-+  assert.equal(billing.list()[0].status, "suspended");
++  assert.equal(ended.terminated, 1);
++  assert.equal(billing.list()[0].status, "terminated");
++  await billing.runScheduler(new Date("2026-12-15T00:00:00.000Z"));
++  assert.equal(calls.length, 2);
++  assert.equal(billing.list()[0].status, "terminated");
++  const event = { eventId: "late", subscriptionId: sub.id, period: "2026-12", amount: 880000, status: "paid" };
++  const secret = "test-secret";
++  const signature = crypto.createHmac("sha256", secret).update(JSON.stringify(event)).digest("hex");
++  billing.applyWebhook(event, signature, secret);
++  assert.equal(billing.list()[0].status, "terminated");
++  await billing.runScheduler(new Date("2027-01-15T00:00:00.000Z"));
++  assert.equal(calls.length, 2);
 +  const early = billing.requestCancel(sub.id, "owner@example.test");
 +  assert.equal(early.cancelRequestedAt != null, true);
-+  assert.equal(early.paidMonths, 0);
++  assert.equal(early.status, "terminated");
++  assert.equal(early.paidMonths, 1);
++  assert.equal(early.available, 0);
 +  assert.equal(early.cancelEffectivePeriod, null);
 +});
 +
