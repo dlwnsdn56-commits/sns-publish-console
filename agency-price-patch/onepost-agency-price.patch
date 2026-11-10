@@ -1,0 +1,152 @@
+--- a/public/index.html
++++ b/public/index.html
+@@ -942,12 +942,12 @@
+           <article class="ad-card" data-ad-id="agency">
+             <div class="ad-card-eyebrow">광고</div>
+             <h3 class="ad-card-title">AI 영상 · SNS 대행</h3>
+-            <p class="ad-card-body">사진만 주시면 숏폼을 만들고, 여러 채널에 올려 드립니다. 직원 없이, 10편 충전 · 6개월 사용.</p>
++            <p class="ad-card-body">사진만 주시면 숏폼을 만들고, 원포스트로 채널에 올려 드립니다. 이 칸은 영상 제작 대행이며 도구 요금이 아닙니다.</p>
+             <ul class="ad-card-points">
+-              <li>영상 10편 충전 800,000원 (VAT 별도)</li>
+-              <li>기획 · AI 영상 제작 · 6개 채널 업로드 · 충전 후 6개월 안에 사용</li>
++              <li>영상 제작 대행 월 10편 80만원 (VAT 별도) · 월 구독</li>
++              <li>기획 · AI 영상 제작 · 원포스트로 SNS 업로드 관리</li>
+             </ul>
+-            <p class="ad-card-fine">콘솔 구독(월 9,900원)과는 별도 서비스입니다. 충전식, 6개월 사용.</p>
++            <p class="ad-card-fine">원포스트 도구 요금과는 별도입니다. 콘솔 구독(월 9,900원)과는 다른 상품입니다.</p>
+             <a class="ad-card-cta" href="/agency">자세히 보기</a>
+           </article>
+           <article class="ad-card ad-card-compact" data-ad-id="agency-extra">
+--- a/public/ether.html
++++ b/public/ether.html
+@@ -152,7 +152,7 @@
+ <div class="hero"><div class="wrap">
+   <p class="eyebrow">AI Video Studio &amp; SNS Operation</p>
+   <h1>촬영 없이,<br><em>사진만으로</em> 만드는<br>홍보 영상.</h1>
+-  <p class="sub">에테르는 AI로 홍보 영상을 만들고, 최대 8개 SNS 채널 발행과 운영까지 맡는 영상 스튜디오입니다. 직원을 뽑지 않고도 영상 10편을 충전해 6개월 안에 꾸준히 쓸 수 있습니다.</p>
++  <p class="sub">에테르는 AI로 홍보 영상을 만들고, 최대 8개 SNS 채널 발행과 운영까지 맡는 영상 스튜디오입니다. 매월 영상 10편을 만들고, 원포스트로 SNS에 올리는 월 구독입니다.</p>
+   <div class="cta-row">
+     <a class="btn pri" href="/free?src=homepage">무료 샘플 영상 받기</a>
+     <a class="btn ghost" href="#work">작업물 보기</a>
+@@ -167,7 +167,7 @@
+   <div class="stat"><b>8</b><span>동시 발행 SNS 채널</span></div>
+   <div class="stat"><b>1편</b><span>계약 전 무료 샘플</span></div>
+   <div class="stat"><b>0</b><span>별도 촬영 · 추가 인력</span></div>
+-  <div class="stat"><b>80만</b><span>10편 충전 · 6개월 사용(원, VAT 별도)</span></div>
++  <div class="stat"><b>80만</b><span>영상 제작 대행 월 10편 80만원 (VAT 별도) · 월 구독</span></div>
+ </div></div>
+ 
+ <section id="work"><div class="wrap">
+@@ -232,8 +232,8 @@
+   <div class="steps">
+     <div class="step"><div class="n">STEP 01</div><h3>상담 · 자료 전달</h3><p>원하는 분위기와 사진·자료를 전달해 주세요.</p><span class="tm">카카오톡 · 전화 · 폼</span></div>
+     <div class="step"><div class="n">STEP 02</div><h3>무료 샘플 제작</h3><p>실제 자료로 영상 1편을 만들어 먼저 보여 드립니다.</p><span class="tm">비용 0원</span></div>
+-    <div class="step"><div class="n">STEP 03</div><h3>10편 충전</h3><p>영상 10편 충전(800,000원, VAT 별도). 충전 후 6개월 안에 사용합니다.</p><span class="tm">충전식 · 6개월 사용</span></div>
+-    <div class="step"><div class="n">STEP 04</div><h3>제작 · 업로드 시작</h3><p>기획 · AI 영상 제작 · 6개 채널 업로드를 진행합니다.</p><span class="tm">10편 충전 · 6개월 사용</span></div>
++    <div class="step"><div class="n">STEP 03</div><h3>월 구독</h3><p>영상 제작 대행 월 10편 80만원 (VAT 별도) · 월 구독. 영상 제작 대행이며 원포스트 도구 요금이 아닙니다.</p><span class="tm">월 구독</span></div>
++    <div class="step"><div class="n">STEP 04</div><h3>제작 · 업로드 시작</h3><p>기획 · AI 영상 제작을 하고, 원포스트로 SNS 업로드를 관리합니다.</p><span class="tm">원포스트 업로드</span></div>
+   </div>
+ </div></section>
+ 
+@@ -243,14 +243,14 @@
+   <p class="lead">계약 전, 무료 샘플 영상 1편으로 퀄리티를 먼저 확인하세요.</p>
+   <div class="plans">
+     <div class="plan b" style="max-width:520px;margin:0 auto;">
+-      <div class="tag">충전식 · 6개월 사용</div>
+-      <h3>영상 10편 충전</h3>
+-      <p class="q">충전 후 6개월 안에 사용</p>
+-      <ul><li>기획 · AI 영상 제작</li><li>6개 채널 업로드 포함</li><li>제품·현장 사진 기반 숏폼 제작</li><li>장기 월 구독 없음 · 10편 충전, 6개월 사용</li></ul>
+-      <div class="price">800,000원<small> VAT 별도</small></div>
++      <div class="tag">영상 제작 대행</div>
++      <h3>월 10편</h3>
++      <p class="q">영상 제작 대행 월 10편 80만원 (VAT 별도) · 월 구독</p>
++      <ul><li>기획 · AI 영상 제작</li><li>원포스트로 SNS 업로드 관리</li><li>제품·현장 사진 기반 숏폼 제작</li><li>원포스트 도구 요금과는 별도</li></ul>
++      <div class="price">80만원<small> (VAT 별도) · 월</small></div>
+     </div>
+   </div>
+-  <p class="note">* 영상 10편 충전 800,000원 (VAT 별도). 충전식, 6개월 사용. 셀프 콘솔 구독(월 9,900원)과는 별도 대행 상품입니다.</p>
++  <p class="note">* 영상 제작 대행 월 10편 80만원 (VAT 별도) · 월 구독. 영상 제작 대행이며, 셀프 콘솔 구독(월 9,900원)과는 별도입니다.</p>
+ </div></section>
+ 
+ <section class="alt"><div class="wrap">
+--- a/public/agency.html
++++ b/public/agency.html
+@@ -563,16 +563,16 @@
+       <h2>패키지</h2>
+       <div class="two">
+         <article class="card pkg" style="grid-column: 1 / -1;">
+-          <span class="example">충전식 · 6개월 사용</span>
+-          <h3>영상 10편 충전</h3>
+-          <div class="price">800,000원 <small>VAT 별도</small></div>
++          <span class="example">영상 제작 대행</span>
++          <h3>월 10편</h3>
++          <div class="price">80만원 <small>(VAT 별도) · 월</small></div>
+           <ul>
+-            <li>영상 10편 충전 · 충전 후 6개월 안에 사용</li>
+-            <li>기획 · AI 영상 제작 · 6개 채널 업로드 포함</li>
++            <li>영상 제작 대행 월 10편 80만원 (VAT 별도) · 월 구독</li>
++            <li>기획 · AI 영상 제작 · 원포스트로 SNS 업로드 관리</li>
+           </ul>
+         </article>
+       </div>
+-      <p class="fine">충전식, 6개월 사용. 장기 월 구독이 아니며, 충전한 10편을 6개월 안에 사용합니다. (VAT 별도)</p>
++      <p class="fine">영상 제작 대행 월 10편 80만원 (VAT 별도) · 월 구독. 원포스트 도구 요금과는 별도인 영상 제작 대행입니다.</p>
+     </section>
+ 
+     <section class="wrap">
+@@ -609,12 +609,12 @@
+         <p>일반 운영 기준으로 안정화까지 약 1개월, 그 기간은 월 1만~2만 회 정도입니다. 이후 월 2만~5만 회를 보는 경우가 많습니다. 보장 수치가 아니며, 채널과 업종에 따라 달라집니다.</p>
+       </details>
+       <details>
+-        <summary>충전한 영상은 언제까지 쓸 수 있나요?</summary>
+-        <p>영상 10편 충전(800,000원, VAT 별도) 후 <strong>6개월 안에</strong> 사용합니다. 충전식, 6개월 사용이며 장기 월 구독이 아닙니다.</p>
++        <summary>한 달에 영상이 몇 편인가요?</summary>
++        <p>영상 제작 대행 월 10편 80만원 (VAT 별도) · 월 구독입니다. 남은 편수를 다음 달로 넘기는지는 이 안내에 없습니다.</p>
+       </details>
+       <details>
+-        <summary>최소 계약 기간이 있나요?</summary>
+-        <p>장기 월 구독·장기 계약이 없습니다. 10편 충전, 6개월 사용 방식입니다.</p>
++        <summary>해지와 환불은 어떻게 되나요?</summary>
++        <p>월 구독입니다. 최소 유지 기간, 해지 시점, 환불은 이 페이지에 정하지 않았습니다.</p>
+       </details>
+     </section>
+ 
+--- a/test/agency-price.test.js
++++ b/test/agency-price.test.js
+@@ -0,0 +1,36 @@
++const fs = require("fs");
++const path = require("path");
++const test = require("node:test");
++const assert = require("node:assert/strict");
++
++const root = path.join(__dirname, "..", "public");
++const phrase = "영상 제작 대행 월 10편 80만원 (VAT 별도) · 월 구독";
++const files = ["index.html", "ether.html", "agency.html"].map((name) => ({
++  name,
++  text: fs.readFileSync(path.join(root, name), "utf8"),
++}));
++
++test("agency price uses the confirmed monthly line and drops the prepaid pack", () => {
++  for (const file of files) {
++    assert.equal(file.text.includes(phrase), true, file.name);
++    for (const old of ["10편 충전", "충전식", "6개월 안에", "6개월 사용", "800,000원", "재충전"]) {
++      assert.equal(file.text.includes(old), false, file.name + " " + old);
++    }
++  }
++});
++
++test("OnePost tool price stays 9,900 and incentive copy is not invented", () => {
++  const index = files[0].text;
++  const ether = files[1].text;
++  const agency = files[2].text;
++  assert.equal(index.includes("월 9,900원"), true);
++  assert.equal(index.includes("₩9,900/30일"), true);
++  assert.equal(ether.includes("월 9,900원"), true);
++  assert.equal(agency.includes("월 9,900원"), true);
++  assert.equal(index.includes("최근 6개월 · 업로드 성공"), true);
++  for (const file of files) {
++    assert.equal(file.text.includes("인센티브 안내는 준비 중"), false);
++    assert.equal(file.text.includes("+10만"), false);
++    assert.equal(file.text.includes("1년 안"), false);
++  }
++});
