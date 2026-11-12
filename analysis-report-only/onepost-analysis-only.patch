@@ -1,0 +1,166 @@
+diff -u -r -N a/public/app.js b/public/app.js
+--- a/public/app.js	2026-11-12 11:06:07.378344488 +0000
++++ b/public/app.js	2026-11-12 11:06:07.382344517 +0000
+@@ -4622,9 +4622,10 @@
+       const data = await res.json().catch(() => ({}));
+       if (seq !== analysisSeq) return;
+       if (!res.ok) throw new Error(data.error || "불러오지 못했습니다.");
+-      if (status) status.textContent = client.name;
++      if (status) status.textContent = "";
+       lastAnalysis = data;
+-      body.innerHTML = renderChannelAnalysisView(data);
++      if (body) body.innerHTML = "";
++      renderYtReport();
+     } catch (err) {
+       if (seq !== analysisSeq) return;
+       if (status) status.textContent = (err && err.message) || "불러오지 못했습니다.";
+@@ -4855,7 +4856,9 @@
+ 
+   function readManualInputs() {
+     const manual = {};
+-    document.querySelectorAll("[data-manual-channel]").forEach((row) => {
++    const root = pathOf() === "/analysis" ? document.getElementById("analysis-manual") : document.getElementById("view-yt-report");
++    const rows = root ? root.querySelectorAll("[data-manual-channel]") : [];
++    rows.forEach((row) => {
+       const id = row.getAttribute("data-manual-channel");
+       const num = (name) => {
+         const input = row.querySelector('[data-field="' + name + '"]');
+@@ -4887,9 +4890,25 @@
+     return Number(value).toLocaleString("ko-KR");
+   }
+ 
++  function activeReportNodes() {
++    if (pathOf() === "/analysis") {
++      return {
++        sheet: document.getElementById("analysis-report-sheet"),
++        frame: document.getElementById("analysis-report-frame"),
++        status: document.getElementById("analysis-status"),
++      };
++    }
++    return {
++      sheet: document.getElementById("sns-report-sheet"),
++      frame: document.getElementById("sns-report-frame"),
++      status: document.getElementById("sns-report-status"),
++    };
++  }
++
+   function renderYtReport() {
+-    const sheet = document.getElementById("sns-report-sheet");
+-    const status = document.getElementById("sns-report-status");
++    const nodes = activeReportNodes();
++    const sheet = nodes.sheet;
++    const status = nodes.status;
+     if (!sheet || !window.YtReport) return;
+     const report = window.YtReport.buildReport(Object.assign({ now: new Date() }, reportSource()));
+     const cards = (report.channels || []).map((channel) => {
+@@ -4935,8 +4954,9 @@
+   }
+ 
+   function fitReportScale() {
+-    const frame = document.getElementById("sns-report-frame");
+-    const sheet = document.getElementById("sns-report-sheet");
++    const nodes = activeReportNodes();
++    const frame = nodes.frame;
++    const sheet = nodes.sheet;
+     if (!frame || !sheet) return;
+     if (window.innerWidth <= 800) {
+       sheet.style.transform = "";
+@@ -5045,13 +5065,12 @@
+     apply.addEventListener("click", renderYtReport);
+     document.getElementById("sns-report-png").addEventListener("click", () => downloadReport("png"));
+     document.getElementById("sns-report-pdf").addEventListener("click", () => downloadReport("pdf"));
+-    const analysisBtn = document.getElementById("analysis-report-btn");
+-    if (analysisBtn) {
+-      analysisBtn.addEventListener("click", () => {
+-        ytrReportChannel = null;
+-        goPath("/yt-report");
+-      });
+-    }
++    const analysisApply = document.getElementById("analysis-manual-apply");
++    if (analysisApply) analysisApply.addEventListener("click", () => renderYtReport());
++    const analysisPng = document.getElementById("analysis-png");
++    const analysisPdf = document.getElementById("analysis-pdf");
++    if (analysisPng) analysisPng.addEventListener("click", () => downloadReport("png", document.getElementById("analysis-report-sheet")));
++    if (analysisPdf) analysisPdf.addEventListener("click", () => downloadReport("pdf", document.getElementById("analysis-report-sheet")));
+   }
+   bindReportTools();
+ 
+diff -u -r -N a/public/index.html b/public/index.html
+--- a/public/index.html	2026-11-12 11:06:07.378344488 +0000
++++ b/public/index.html	2026-11-12 11:06:07.382344517 +0000
+@@ -771,11 +771,25 @@
+ 
+       <section id="view-analysis" class="hidden">
+         <h2>채널 분석</h2>
+-        <p class="sub">왼쪽에서 고른 가게에 연결된 채널만 보여 줍니다. 숫자는 인사이트 스냅샷에 있는 값만 쓰고, 없는 값은 0으로 바꾸지 않습니다.</p>
+-        <p class="hint">다른 유튜브 채널을 찾거나 최대 3개를 나란히 보려면 <a href="/yt-research" data-nav="/yt-research">유튜브 리서치</a>를 여세요.</p>
+         <p class="hint" id="analysis-status"></p>
+-        <p><button type="button" class="btn" id="analysis-report-btn">한 장 보고서</button></p>
+-        <div id="analysis-body"></div>
++        <div class="sns-report-tools">
++          <details id="analysis-manual">
++            <summary>숫자 직접 입력</summary>
++            <div class="ytr-manual" data-manual-channel="instagram"><b>인스타그램</b><input data-field="handle" placeholder="아이디"><input data-field="followers" type="number" placeholder="팔로워"><input data-field="posts" type="number" placeholder="게시"><input data-field="views" type="number" placeholder="조회"></div>
++            <div class="ytr-manual" data-manual-channel="facebook"><b>페이스북</b><input data-field="handle" placeholder="아이디"><input data-field="followers" type="number" placeholder="팔로워"><input data-field="posts" type="number" placeholder="게시"><input data-field="views" type="number" placeholder="조회"></div>
++            <div class="ytr-manual" data-manual-channel="threads"><b>스레드</b><input data-field="handle" placeholder="아이디"><input data-field="followers" type="number" placeholder="팔로워"><input data-field="posts" type="number" placeholder="게시"><input data-field="views" type="number" placeholder="조회"></div>
++            <div class="ytr-manual" data-manual-channel="tiktok"><b>틱톡</b><input data-field="handle" placeholder="아이디"><input data-field="followers" type="number" placeholder="팔로워"><input data-field="posts" type="number" placeholder="게시"><input data-field="views" type="number" placeholder="조회"></div>
++            <div class="ytr-manual" data-manual-channel="x"><b>X</b><input data-field="handle" placeholder="아이디"><input data-field="followers" type="number" placeholder="팔로워"><input data-field="posts" type="number" placeholder="게시"><input data-field="views" type="number" placeholder="조회"></div>
++            <div class="ytr-manual" data-manual-channel="naver-clip"><b>네이버 클립</b><input data-field="handle" placeholder="아이디"><input data-field="followers" type="number" placeholder="팔로워"><input data-field="posts" type="number" placeholder="클립"><input data-field="views" type="number" placeholder="조회"></div>
++          </details>
++          <button type="button" class="btn" id="analysis-manual-apply">입력 반영</button>
++          <button type="button" class="btn primary" id="analysis-png">PNG 저장</button>
++          <button type="button" class="btn primary" id="analysis-pdf">PDF 저장</button>
++        </div>
++        <div class="sns-report-frame" id="analysis-report-frame">
++          <article class="sns-sheet" id="analysis-report-sheet"></article>
++        </div>
++        <div id="analysis-body" hidden></div>
+       </section>
+ 
+       <section id="view-yt-research" class="hidden">
+diff -u -r -N a/public/styles.css b/public/styles.css
+--- a/public/styles.css	2026-11-12 11:06:07.378344488 +0000
++++ b/public/styles.css	2026-11-12 11:06:07.382344517 +0000
+@@ -2540,6 +2540,7 @@
+ .sns-mini-card .sns-stat { padding: 3px 5px; }
+ .sns-mini-card .sns-stat b { font-size: 13px; }
+ .insights-sheet { width: 100%; max-width: 794px; min-height: 0; margin: 0 0 18px; }
++#analysis-body { display: none !important; }
+ .insights-posts { display: flex; flex-direction: column; gap: 6px; }
+ .insights-post { display: flex; gap: 8px; align-items: center; font-size: 12px; }
+ .insights-post img, .insights-post .sns-thumb-empty { width: 42px; height: 28px; object-fit: cover; border-radius: 4px; background: #d9e4f5; }
+diff -u -r -N a/test/analysis-report-only.test.js b/test/analysis-report-only.test.js
+--- a/test/analysis-report-only.test.js	1970-01-01 00:00:00.000000000 +0000
++++ b/test/analysis-report-only.test.js	2026-11-12 11:06:07.382344517 +0000
+@@ -0,0 +1,31 @@
++const fs = require("fs");
++const path = require("path");
++const test = require("node:test");
++const assert = require("node:assert/strict");
++
++const index = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
++const app = fs.readFileSync(path.join(__dirname, "..", "public", "app.js"), "utf8");
++
++function section(id) {
++  const start = index.indexOf('id="' + id + '"');
++  const end = index.indexOf("<section", start + 10);
++  return index.slice(start, end === -1 ? start + 4000 : end);
++}
++
++test("channel analysis tab shows only the one-page report", () => {
++  const analysis = section("view-analysis");
++  assert.equal(analysis.includes('id="analysis-report-sheet"'), true);
++  assert.equal(analysis.includes("PNG 저장"), true);
++  assert.equal(analysis.includes("PDF 저장"), true);
++  assert.equal(analysis.includes("<summary>숫자 직접 입력</summary>"), true);
++  assert.equal(/<details id="analysis-manual" open/.test(analysis), false);
++  assert.equal(analysis.includes('id="analysis-body" hidden'), true);
++  assert.equal(analysis.includes("analysis-table"), false);
++  assert.equal(analysis.includes("한 장 보고서</button>"), false);
++  const insights = section("view-insights");
++  assert.equal(insights.includes("일간"), true);
++  assert.equal(insights.includes("지금 불러오기"), true);
++  const research = section("view-yt-research");
++  assert.equal(research.includes("단어로 영상 찾기"), true);
++  assert.equal(app.includes("renderChannelAnalysisView"), true);
++});
