@@ -254,6 +254,52 @@ diff -u -r -N a/lib/publish-job.js b/lib/publish-job.js
      createdAt: now,
      completedAt: null,
      result: null,
+diff -u -r -N a/lib/report-mail.js b/lib/report-mail.js
+--- a/lib/report-mail.js
++++ b/lib/report-mail.js
+@@ -707,6 +707,25 @@
+   socket.write(line + "\r\n");
+ }
+ 
++function bareMailAddress(value) {
++  const text = String(value || "").trim().replace(/^<|>$/g, "");
++  if (!text.includes("@") || /[\r\n<>]/.test(text)) return "";
++  return text;
++}
++
++function envelopeFrom(env, fromEmail) {
++  const source = env || {};
++  const configured = bareMailAddress(source.SMTP_ENVELOPE_FROM);
++  if (configured) return configured;
++  const from = bareMailAddress(fromEmail);
++  if (from) return from;
++  const user = bareMailAddress(source.SMTP_USER);
++  if (user) return user;
++  const err = new Error("보내는 메일 주소가 없습니다.");
++  err.status = 400;
++  throw err;
++}
++
+ async function createSmtpTransport(env) {
+   const host = String(env.SMTP_HOST || "");
+   const port = Number(env.SMTP_PORT || 587);
+@@ -762,7 +781,7 @@
+       smtpWrite(socket, Buffer.from(pass).toString("base64"));
+       await expect();
+       const headerFrom = message.fromEmail || user;
+-      smtpWrite(socket, "MAIL FROM:<" + user + ">");
++      smtpWrite(socket, "MAIL FROM:<" + envelopeFrom(env, message.fromEmail) + ">");
+       await expect();
+       for (const item of message.to.concat(message.cc || [])) {
+         smtpWrite(socket, "RCPT TO:<" + item + ">");
+@@ -929,6 +948,7 @@
+   renderEmail,
+   createReportMail,
+   createSmtpTransport,
++  envelopeFrom,
+   mountReportMail,
+   WEEKDAYS,
+ };
 diff -u -r -N a/public/app.js b/public/app.js
 --- a/public/app.js	2026-11-12 14:20:02.323924987 +0000
 +++ b/public/app.js	2026-11-12 14:20:02.323924987 +0000
@@ -782,4 +828,18 @@ diff -u -r -N a/test/channel-caption.test.js b/test/channel-caption.test.js
 +  assert.equal(byChannel["naver-clip"], "기본 설명");
 +  assert.equal(mergeCaptionFields({ caption_x: "유지" }).captionX, "유지");
 +  assert.equal(saved.length, 0);
++});
+diff -u -r -N a/test/smtp-envelope.test.js b/test/smtp-envelope.test.js
+--- a/test/smtp-envelope.test.js
++++ b/test/smtp-envelope.test.js
+@@ -0,0 +1,10 @@
++const test = require("node:test");
++const assert = require("node:assert/strict");
++const { envelopeFrom } = require("../lib/report-mail");
++
++test("Resend login name is not used as the envelope sender", () => {
++  assert.equal(envelopeFrom({ SMTP_USER: "resend" }, "ether@1post.kr"), "ether@1post.kr");
++  assert.equal(envelopeFrom({ SMTP_USER: "resend", SMTP_ENVELOPE_FROM: "ether@1post.kr" }, "other@example.test"), "ether@1post.kr");
++  assert.equal(envelopeFrom({ SMTP_USER: "mailer@1post.kr" }, ""), "mailer@1post.kr");
++  assert.throws(() => envelopeFrom({ SMTP_USER: "resend" }, ""), /보내는 메일 주소가 없습니다/);
 +});
