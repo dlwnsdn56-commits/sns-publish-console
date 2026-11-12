@@ -1,0 +1,77 @@
+--- a/public/index.html	2026-11-12 07:15:07.805473238 +0000
++++ b/public/index.html	2026-11-12 07:15:10.317480545 +0000
+@@ -202,7 +202,7 @@
+               <button type="button" class="btn ghost disconnect-btn hidden" data-disconnect="x">연결 해제</button>
+             </div>
+           </div>
+-          <div class="tile" data-sns="blogger">
++          <div class="tile" data-sns="blogger" hidden>
+             <div class="tile-name">구글 블로그</div>
+             <div class="st off" data-home-st="blogger">연결 안 됨</div>
+             <div class="tile-actions">
+@@ -423,7 +423,7 @@
+                 <a class="chrome-tab" href="/sns/threads" data-sns="threads" role="tab">스레드</a>
+                 <a class="chrome-tab" href="/sns/tiktok" data-sns="tiktok" role="tab">틱톡</a>
+                 <a class="chrome-tab" href="/sns/x" data-sns="x" role="tab">트위터</a>
+-                <a class="chrome-tab" href="/sns/blogger" data-sns="blogger" role="tab">구글 블로그</a>
++                <a class="chrome-tab" href="/sns/blogger" data-sns="blogger" role="tab" hidden>구글 블로그</a>
+                 <a class="chrome-tab" href="/sns/naver-clip" data-sns="naver-clip" role="tab">네이버 클립</a>
+               </div>
+               <div class="phone">
+--- a/public/app.js	2026-11-12 07:15:07.805473238 +0000
++++ b/public/app.js	2026-11-12 07:15:11.525484044 +0000
+@@ -3987,7 +3987,7 @@
+     fillPublishFromDraft();
+     setAppliedMarks(true);
+     msg.className = "msg ok";
+-    msg.textContent = SNS.length + "개 채널에 적용했습니다. 아래 탭에서 발행하세요.";
++    msg.textContent = SNS.filter((s) => s.id !== "blogger").length + "개 채널에 적용했습니다. 아래 탭에서 발행하세요.";
+   });
+ 
+   function selectedComposeChannels() {
+@@ -4006,6 +4006,7 @@
+     list.innerHTML = "";
+     const xOk = isXAllowed();
+     SNS.forEach((s) => {
++      if (s.id === "blogger") return;
+       const id = s.channels[0];
+       const locked = id === "x" && !xOk;
+       const defaultChecked = id === "naver-clip" ? isOnepostDesktop() : !locked;
+--- a/public/styles.css	2026-11-12 07:15:07.805473238 +0000
++++ b/public/styles.css	2026-11-12 07:15:10.789481914 +0000
+@@ -294,6 +294,8 @@
+ .tile {
+   background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 16px;
+ }
++.tile[data-sns="blogger"],
++.chrome-tab[data-sns="blogger"] { display: none !important; }
+ .tile-name { font-weight: 700; margin-bottom: 8px; }
+ .st.ok { color: var(--ok); font-size: 13px; }
+ .st.off, .st.wait { color: var(--muted); font-size: 13px; }
+--- a/test/home-channels.test.js
++++ b/test/home-channels.test.js
+@@ -0,0 +1,24 @@
++const fs = require("fs");
++const path = require("path");
++const test = require("node:test");
++const assert = require("node:assert/strict");
++
++const index = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
++const app = fs.readFileSync(path.join(__dirname, "..", "public", "app.js"), "utf8");
++const css = fs.readFileSync(path.join(__dirname, "..", "public", "styles.css"), "utf8");
++
++test("home channel grid hides Google Blog and keeps the other seven channels", () => {
++  const home = index.split('id="home-tiles"')[1].split("</section>")[0];
++  const tiles = [...home.matchAll(/<div class="tile"[^>]*data-sns="([^"]+)"([^>]*)>/g)];
++  const visible = tiles.filter((item) => !/\shidden\b/.test(item[2])).map((item) => item[1]);
++  assert.deepEqual(visible, ["youtube", "instagram", "facebook", "threads", "tiktok", "x", "naver-clip", "video"]);
++  const blogger = tiles.find((item) => item[1] === "blogger");
++  assert.equal(/\shidden\b/.test(blogger[2]), true);
++  assert.equal(css.includes('.tile[data-sns="blogger"]'), true);
++  assert.equal(css.includes("display: none !important"), true);
++  const tab = index.match(/<a class="chrome-tab"[^>]*data-sns="blogger"[^>]*>/);
++  assert.equal(tab && /\shidden\b/.test(tab[0]), true);
++  assert.equal(app.includes('if (s.id === "blogger") return;'), true);
++  assert.equal(app.includes('id: "blogger"'), true);
++  assert.equal(app.includes("/api/blogger/status"), true);
++});
