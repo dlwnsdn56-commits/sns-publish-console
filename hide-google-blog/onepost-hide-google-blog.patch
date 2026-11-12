@@ -1,5 +1,5 @@
 --- a/public/index.html	2026-11-12 07:15:07.805473238 +0000
-+++ b/public/index.html	2026-11-12 07:15:10.317480545 +0000
++++ b/public/index.html	2026-11-12 07:27:08.986747617 +0000
 @@ -202,7 +202,7 @@
                <button type="button" class="btn ghost disconnect-btn hidden" data-disconnect="x">연결 해제</button>
              </div>
@@ -9,6 +9,15 @@
              <div class="tile-name">구글 블로그</div>
              <div class="st off" data-home-st="blogger">연결 안 됨</div>
              <div class="tile-actions">
+@@ -216,7 +216,7 @@
+             <div class="st off" data-home-st="naver-clip">윈도우 앱 전용</div>
+             <div class="tile-actions">
+               <a class="btn ghost" href="/sns/naver-clip" data-sns="naver-clip">페이지 이동</a>
+-              <a class="btn primary home-naver-clip-btn" href="/download/onepost-windows" download>윈도우 앱 다운로드</a>
++              <a class="btn primary home-naver-clip-btn" href="/download/onepost-windows" download>앱 다운로드</a>
+             </div>
+           </div>
+           <div class="tile" data-sns="video">
 @@ -423,7 +423,7 @@
                  <a class="chrome-tab" href="/sns/threads" data-sns="threads" role="tab">스레드</a>
                  <a class="chrome-tab" href="/sns/tiktok" data-sns="tiktok" role="tab">틱톡</a>
@@ -38,8 +47,8 @@
        const locked = id === "x" && !xOk;
        const defaultChecked = id === "naver-clip" ? isOnepostDesktop() : !locked;
 --- a/public/styles.css	2026-11-12 07:15:07.805473238 +0000
-+++ b/public/styles.css	2026-11-12 07:15:10.789481914 +0000
-@@ -294,6 +294,8 @@
++++ b/public/styles.css	2026-11-12 07:27:13.902753977 +0000
+@@ -294,12 +294,19 @@
  .tile {
    background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 16px;
  }
@@ -48,6 +57,17 @@
  .tile-name { font-weight: 700; margin-bottom: 8px; }
  .st.ok { color: var(--ok); font-size: 13px; }
  .st.off, .st.wait { color: var(--muted); font-size: 13px; }
+ .st.wait { color: var(--warn); }
+ .tile-actions { display: flex; gap: 8px; margin-top: 12px; }
+ .tile-actions .btn { width: auto; height: 36px; margin-top: 0; padding: 0 12px; font-size: 13px; flex: 1; }
++.tile[data-sns="naver-clip"] .tile-actions { flex-direction: column; }
++.tile[data-sns="naver-clip"] .tile-actions .btn {
++  width: 100%; flex: none; white-space: nowrap; overflow: hidden; text-overflow: clip;
++  font-size: 13px; padding: 0 8px;
++}
+ 
+ .post {
+   display: grid;
 --- a/test/home-channels.test.js
 +++ b/test/home-channels.test.js
 @@ -0,0 +1,24 @@
