@@ -1,7 +1,7 @@
 diff -u -r -N a/lib/report-mail.js b/lib/report-mail.js
 --- a/lib/report-mail.js	1970-01-01 00:00:00.000000000 +0000
-+++ b/lib/report-mail.js	2026-11-12 13:20:41.498472494 +0000
-@@ -0,0 +1,657 @@
++++ b/lib/report-mail.js	2026-11-12 13:36:55.764781628 +0000
+@@ -0,0 +1,934 @@
 +const crypto = require("crypto");
 +const fs = require("fs");
 +const net = require("net");
@@ -123,42 +123,300 @@ diff -u -r -N a/lib/report-mail.js b/lib/report-mail.js
 +    .replace(/"/g, "&quot;");
 +}
 +
-+function channelRows(report) {
-+  const channels = (report && report.channels) || [];
-+  if (!channels.length) return "<p>채널 분석 데이터가 없습니다.</p>";
-+  return channels.map((channel) => {
-+    const stats = (channel.stats || []).map((stat) => escapeHtml(stat.label) + " " + escapeHtml(stat.value)).join(" · ");
-+    const state = channel.state === "ok" ? stats : escapeHtml(channel.stateLabel || "데이터 없음");
-+    return "<tr><td style=\"padding:8px;border-bottom:1px solid #e6eef8\">" + escapeHtml(channel.name) + "</td><td style=\"padding:8px;border-bottom:1px solid #e6eef8\">" + state + "</td></tr>";
++const MAIL_CHANNELS = [
++  { id: "youtube", name: "유튜브", color: "#FF0033", followerLabel: "구독자" },
++  { id: "instagram", name: "인스타그램", color: "#E1306C", followerLabel: "팔로워", dailyViews: true },
++  { id: "facebook", name: "페이스북", color: "#1877F2", followerLabel: "팔로워" },
++  { id: "threads", name: "스레드", color: "#111111", followerLabel: "팔로워", dailyViews: true },
++  { id: "tiktok", name: "틱톡", color: "#111111", followerLabel: "팔로워" },
++  { id: "x", name: "X", color: "#111111", followerLabel: "팔로워" },
++  { id: "naver-clip", name: "네이버 클립", color: "#03C75A", followerLabel: "팔로워" },
++];
++
++function ymdOf(date) {
++  const parts = kstParts(date);
++  return parts.year + "-" + String(parts.month).padStart(2, "0") + "-" + String(parts.day).padStart(2, "0");
++}
++
++function addDays(ymd, days) {
++  const [year, month, day] = ymd.split("-").map(Number);
++  const next = new Date(Date.UTC(year, month - 1, day + days));
++  return next.toISOString().slice(0, 10);
++}
++
++function daySpan(later, earlier) {
++  const end = Date.parse(later + "T00:00:00Z");
++  const start = Date.parse(earlier + "T00:00:00Z");
++  return Math.round((end - start) / 86400000);
++}
++
++function finiteOrNull(value) {
++  const number = Number(value);
++  return Number.isFinite(number) ? number : null;
++}
++
++function datesAfterThrough(after, until) {
++  const out = [];
++  let cursor = addDays(after, 1);
++  while (cursor <= until) {
++    out.push(cursor);
++    cursor = addDays(cursor, 1);
++  }
++  return out;
++}
++
++function latestAtOrBefore(points, ymd, key) {
++  let found = null;
++  points.forEach((point) => {
++    if (point.date <= ymd && Number.isFinite(point[key])) found = point;
++  });
++  return found;
++}
++
++function deltaCumulative(points, key, from, to) {
++  const newer = latestAtOrBefore(points, to, key);
++  const older = latestAtOrBefore(points, from, key);
++  if (!newer || !older || newer.date <= from) return null;
++  if (daySpan(newer.date, older.date) > 8) return null;
++  return newer[key] - older[key];
++}
++
++function sumDaily(points, key, from, to) {
++  const byDate = {};
++  points.forEach((point) => {
++    if (Number.isFinite(point[key])) byDate[point.date] = point[key];
++  });
++  const days = datesAfterThrough(from, to);
++  if (!days.length || days.some((date) => !Number.isFinite(byDate[date]))) return null;
++  return days.reduce((sum, date) => sum + byDate[date], 0);
++}
++
++function changePercent(current, previous) {
++  if (!Number.isFinite(current) || !Number.isFinite(previous) || previous === 0) return null;
++  return Math.round(((current - previous) / Math.abs(previous)) * 100);
++}
++
++function normalizePoints(points) {
++  return (points || []).map((point) => ({
++    date: String(point.date || "").slice(0, 10),
++    views: finiteOrNull(point.views),
++    dayViews: finiteOrNull(point.dayViews),
++    followers: finiteOrNull(point.followers),
++    posts: finiteOrNull(point.posts != null ? point.posts : point.videos),
++  })).filter((point) => /^\d{4}-\d{2}-\d{2}$/.test(point.date)).sort((a, b) => a.date.localeCompare(b.date));
++}
++
++function pointsFromSnapshots(snapshots, email, clientId, platform) {
++  const key = String(email || "").toLowerCase() + "|" + clientId + "|" + platform;
++  const days = snapshots && snapshots.days;
++  if (!days) return [];
++  return normalizePoints(Object.keys(days).map((date) => {
++    const row = days[date] && days[date][key];
++    if (!row) return null;
++    return {
++      date,
++      views: row.views,
++      dayViews: row.dayViews,
++      followers: row.followers,
++      posts: row.videos != null ? row.videos : row.posts,
++    };
++  }).filter(Boolean));
++}
++
++function channelConnected(connections, id) {
++  const row = connections && connections[id];
++  if (!row) return false;
++  return !!(row.connected || row.hasToken || row.account);
++}
++
++function metricPair(points, key, mode, start, mid, end) {
++  const current = mode === "daily" ? sumDaily(points, key, mid, end) : deltaCumulative(points, key, mid, end);
++  const previous = mode === "daily" ? sumDaily(points, key, start, mid) : deltaCumulative(points, key, start, mid);
++  return { current, previous, change: changePercent(current, previous) };
++}
++
++function buildWeekly(input) {
++  const source = input || {};
++  const now = source.now instanceof Date ? source.now : new Date();
++  const end = ymdOf(now);
++  const mid = addDays(end, -7);
++  const start = addDays(end, -14);
++  const provided = {};
++  (source.channels || []).forEach((item) => {
++    if (item && item.id) provided[item.id] = item;
++  });
++  const channels = MAIL_CHANNELS.map((meta) => {
++    const given = provided[meta.id];
++    let connected = false;
++    let points = [];
++    if (given) {
++      connected = given.connected !== false;
++      points = normalizePoints(given.points);
++    } else if (source.snapshots || source.connections) {
++      connected = channelConnected(source.connections, meta.id);
++      points = pointsFromSnapshots(source.snapshots, source.email, source.clientId, meta.id);
++    }
++    if (!connected) {
++      return { id: meta.id, name: meta.name, color: meta.color, state: "disconnected", stateLabel: "연결 안 됨", metrics: {} };
++    }
++    const viewsKey = meta.dailyViews ? "dayViews" : "views";
++    const givenMode = given && given.viewsMode === "daily";
++    const views = metricPair(points, givenMode ? "dayViews" : viewsKey, meta.dailyViews || givenMode ? "daily" : "cumulative", start, mid, end);
++    const followers = metricPair(points, "followers", "cumulative", start, mid, end);
++    const posts = metricPair(points, "posts", "cumulative", start, mid, end);
++    const metrics = {
++      views: Object.assign({ label: "조회" }, views),
++      followers: Object.assign({ label: meta.followerLabel }, followers),
++      posts: Object.assign({ label: "게시" }, posts),
++    };
++    const ready = [views, followers, posts].some((item) => Number.isFinite(item.current));
++    return {
++      id: meta.id,
++      name: meta.name,
++      color: meta.color,
++      state: ready ? "ok" : "collecting",
++      stateLabel: ready ? "확인된 값" : "데이터 모으는 중",
++      metrics,
++    };
++  });
++  return { start, mid, end, channels, mock: !!source.mock };
++}
++
++function formatNum(value) {
++  if (!Number.isFinite(Number(value))) return "";
++  const number = Math.round(Number(value));
++  const sign = number < 0 ? "-" : "";
++  return sign + Math.abs(number).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
++}
++
++function changeHtml(change) {
++  if (!Number.isFinite(change)) return "<span style=\"color:#667085;font-weight:normal\">비교 없음</span>";
++  if (change > 0) return "<span style=\"color:#067647;font-weight:bold\">+" + change + "%</span>";
++  if (change < 0) return "<span style=\"color:#b42318;font-weight:bold\">" + change + "%</span>";
++  return "<span style=\"color:#667085;font-weight:bold\">0%</span>";
++}
++
++function cardTable(inner) {
++  return "<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"background:#f7faff;border:1px solid #c9daf6;border-radius:10px\"><tr><td style=\"padding:8px 10px\">" + inner + "</td></tr></table>";
++}
++
++function nameRow(name, color) {
++  return "<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\"><tr><td width=\"10\" bgcolor=\"" + color + "\" style=\"width:8px;height:8px;background:" + color + ";font-size:0;line-height:8px;border-radius:8px\">&nbsp;</td><td style=\"padding-left:6px;font-size:13px;font-weight:bold;color:#102033\">" + escapeHtml(name) + "</td></tr></table>";
++}
++
++function pairCards(cards) {
++  let rows = "";
++  for (let i = 0; i < cards.length; i += 2) {
++    const right = cards[i + 1] || "";
++    rows += "<tr><td class=\"stack\" width=\"50%\" valign=\"top\" style=\"width:50%;padding:4px\">" + cards[i] + "</td><td class=\"stack\" width=\"50%\" valign=\"top\" style=\"width:50%;padding:4px\">" + right + "</td></tr>";
++  }
++  return "<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\">" + rows + "</table>";
++}
++
++function barRow(values) {
++  const nums = values.filter((value) => Number.isFinite(value) && value > 0);
++  if (nums.length < 2) return "";
++  const max = Math.max.apply(null, nums);
++  const cells = values.slice(0, 8).map((value) => {
++    const height = Number.isFinite(value) && value > 0 ? Math.max(4, Math.round((value / max) * 28)) : 2;
++    return "<td valign=\"bottom\" width=\"22\" style=\"padding:0 1px\"><div style=\"font-size:8px;line-height:10px;color:#344054;text-align:center\">" + escapeHtml(formatNum(value)) + "</div><table role=\"presentation\" width=\"12\" align=\"center\" cellpadding=\"0\" cellspacing=\"0\"><tr><td height=\"" + height + "\" bgcolor=\"#0b3fa8\" style=\"height:" + height + "px;background:#0b3fa8;font-size:0;line-height:" + height + "px\">&nbsp;</td></tr></table></td>";
 +  }).join("");
++  return "<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" style=\"margin-top:6px\"><tr>" + cells + "</tr></table>";
++}
++
++function horizontalBar(value, max) {
++  if (!Number.isFinite(value) || value <= 0 || !Number.isFinite(max) || max <= 0) return "";
++  const width = Math.max(8, Math.round((value / max) * 100));
++  return "<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"margin-top:6px\"><tr><td width=\"" + width + "%\" height=\"8\" bgcolor=\"#0b3fa8\" style=\"height:8px;background:#0b3fa8;font-size:0;line-height:8px\">&nbsp;</td><td bgcolor=\"#e6eef8\" style=\"background:#e6eef8;font-size:0;line-height:8px\">&nbsp;</td></tr></table>";
++}
++
++function analysisCards(report) {
++  const channels = (report && report.channels) || [];
++  const source = channels.length ? channels : MAIL_CHANNELS.map((item) => ({ name: item.name, color: item.color, state: "collecting", stateLabel: "데이터 모으는 중", stats: [] }));
++  return pairCards(source.map((channel) => {
++    const color = channel.color || "#0b3fa8";
++    const ready = channel.state === "ok" && (channel.stats || []).length;
++    if (!ready) {
++      const label = channel.state === "disconnected" || /연결 안 됨/.test(String(channel.stateLabel || "")) ? "연결 안 됨" : "데이터 모으는 중";
++      return cardTable(nameRow(channel.name || "채널", color) + "<p style=\"margin:6px 0 0;font-size:12px;color:#667085\">" + label + "</p>");
++    }
++    const stats = (channel.stats || []).slice(0, 4).map((stat) => "<tr><td style=\"font-size:11px;color:#667085;padding:2px 0\">" + escapeHtml(stat.label) + "</td><td align=\"right\" style=\"font-size:14px;font-weight:bold;color:#102033\">" + escapeHtml(formatNum(stat.value)) + "</td></tr>").join("");
++    const spark = Array.isArray(channel.spark) ? channel.spark.map((value) => finiteOrNull(value)).filter((value) => value != null) : [];
++    return cardTable(nameRow(channel.name, color) + "<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\">" + stats + "</table>" + barRow(spark));
++  }));
++}
++
++function weeklyCards(weekly) {
++  const channels = weekly && weekly.channels ? weekly.channels : buildWeekly({}).channels;
++  const views = channels.map((channel) => channel.metrics && channel.metrics.views && channel.metrics.views.current).filter((value) => Number.isFinite(value) && value > 0);
++  const max = views.length ? Math.max.apply(null, views) : 0;
++  return pairCards(channels.map((channel) => {
++    if (channel.state !== "ok") {
++      return cardTable(nameRow(channel.name, channel.color || "#0b3fa8") + "<p style=\"margin:6px 0 0;font-size:12px;color:#667085\">" + escapeHtml(channel.stateLabel || "데이터 모으는 중") + "</p>");
++    }
++    const lines = ["views", "followers", "posts"].map((key) => {
++      const metric = channel.metrics[key];
++      if (!metric || !Number.isFinite(metric.current)) {
++        return "<tr><td style=\"font-size:12px;color:#667085;padding:2px 0\">" + escapeHtml(metric && metric.label || "") + "</td><td align=\"right\" style=\"font-size:12px;color:#667085\">데이터 모으는 중</td></tr>";
++      }
++      return "<tr><td style=\"font-size:12px;color:#667085;padding:2px 0\">" + escapeHtml(metric.label) + "</td><td align=\"right\" style=\"font-size:13px;font-weight:bold;color:#102033\">" + formatNum(metric.current) + " " + changeHtml(metric.change) + "</td></tr>";
++    }).join("");
++    const currentViews = channel.metrics.views && channel.metrics.views.current;
++    return cardTable(nameRow(channel.name, channel.color || "#0b3fa8") + "<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\">" + lines + "</table>" + horizontalBar(currentViews, max));
++  }));
++}
++
++function sheetHtml(input) {
++  const settings = input.settings || {};
++  const report = input.report;
++  const include = settings.include || "both";
++  const brand = settings.fromName || "원포스트";
++  const mock = !!(input.mock || (report && report.mock) || (input.weekly && input.weekly.mock));
++  const count = report && report.channels ? report.channels.filter((item) => item.state === "ok").length : 0;
++  const vars = { clientName: input.clientName || "", period: input.period || "", channelCount: count };
++  const intro = fillTemplate(settings.body || "", vars);
++  let body = "";
++  if (include === "analysis" || include === "both") {
++    const summary = report && report.summary ? "<p style=\"margin:8px 0 0;font-size:13px;line-height:1.5;color:#344054\">" + escapeHtml(report.summary) + "</p>" : "";
++    body += "<p style=\"margin:16px 0 6px;font-size:13px;font-weight:bold;letter-spacing:0.04em;color:#0b3fa8\">채널 분석</p>" + summary + analysisCards(report);
++  }
++  if (include === "weekly" || include === "both") {
++    body += "<p style=\"margin:16px 0 6px;font-size:13px;font-weight:bold;letter-spacing:0.04em;color:#0b3fa8\">주간 리포트</p><p style=\"margin:0 0 6px;font-size:12px;color:#667085\">최근 7일과 그 전 7일입니다. 두 구간이 확인된 숫자만 보여주고, 없는 날은 만들지 않습니다.</p>" + weeklyCards(input.weekly);
++  }
++  const link = input.viewUrl
++    ? "<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" style=\"margin-top:16px\"><tr><td bgcolor=\"#0b3fa8\" style=\"background:#0b3fa8;border-radius:8px\"><a href=\"" + escapeHtml(input.viewUrl) + "\" style=\"display:inline-block;padding:12px 18px;font-size:15px;font-weight:bold;color:#ffffff;text-decoration:none\">보고서 보기</a></td></tr></table><p style=\"margin:8px 0 0;font-size:12px;color:#667085\">이 링크는 14일 뒤 만료됩니다.</p>"
++    : "";
++  const example = mock ? "<p style=\"margin:8px 0 0;font-size:12px;color:#0b3fa8\">예시 데이터입니다. 실제 채널 숫자가 아닙니다.</p>" : "";
++  const inner = "<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"background:#ffffff\"><tr><td style=\"padding:20px\">"
++    + "<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\"><tr>"
++    + "<td valign=\"top\" style=\"color:#0b3fa8;font-size:20px;font-weight:bold\">" + escapeHtml(brand) + "<br><span style=\"font-size:11px;letter-spacing:2px;font-weight:normal\">REPORT</span></td>"
++    + "<td valign=\"top\" align=\"right\" style=\"color:#0b3fa8;font-size:16px;font-weight:bold\">SNS 현황 분석<br><span style=\"font-size:12px;color:#667085;font-weight:normal\">" + escapeHtml(input.period || "") + "</span></td>"
++    + "</tr></table>"
++    + "<p style=\"margin:14px 0 0;font-size:26px;font-weight:bold;color:#102033\">" + escapeHtml(input.clientName || "가게") + "</p>"
++    + "<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"margin-top:12px\"><tr><td bgcolor=\"#e8f1ff\" style=\"background:#e8f1ff;border:1px solid #b9d0f5;border-radius:12px;padding:12px 14px;font-size:14px;line-height:1.55;color:#102033\">" + escapeHtml(intro).replace(/\n/g, "<br>") + example + "</td></tr></table>"
++    + body + link
++    + "</td></tr><tr><td bgcolor=\"#0b1f44\" style=\"background:#0b1f44;color:#ffffff;padding:14px 20px;font-size:12px;line-height:1.5\">조회수나 성과를 보장하지 않습니다.</td></tr></table>";
++  return { vars, intro, inner };
++}
++
++function mailDocument(title, inner) {
++  return "<!doctype html><html lang=\"ko\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>" + escapeHtml(title) + "</title><style>@media only screen and (max-width:480px){.container{width:100% !important}.stack{display:block !important;width:100% !important;max-width:100% !important}}</style></head><body style=\"margin:0;padding:0;background:#f4f7fb\"><table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" bgcolor=\"#f4f7fb\" style=\"background:#f4f7fb\"><tr><td align=\"center\" style=\"padding:12px 8px\"><table role=\"presentation\" class=\"container\" width=\"600\" cellpadding=\"0\" cellspacing=\"0\" style=\"width:100%;max-width:600px;font-family:Arial,sans-serif;color:#102033\">" + inner + "</table></td></tr></table></body></html>";
 +}
 +
 +function renderEmail(input) {
 +  const settings = input.settings || {};
-+  const report = input.report;
-+  const count = report && report.channels ? report.channels.filter((item) => item.state === "ok").length : 0;
-+  const vars = {
-+    clientName: input.clientName || "",
-+    period: input.period || "",
-+    channelCount: count,
-+  };
-+  const subject = fillTemplate(settings.subject || "{고객명} 리포트", vars);
-+  const intro = fillTemplate(settings.body || "", vars);
-+  const include = settings.include || "both";
-+  let analysis = "";
-+  if (include === "analysis" || include === "both") {
-+    const summary = report && report.summary ? "<p>" + escapeHtml(report.summary) + "</p>" : "";
-+    analysis = "<h2 style=\"color:#0b3fa8;font-size:16px\">채널 분석</h2>" + summary + "<table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\">" + channelRows(report) + "</table>";
-+  }
-+  let weekly = "";
-+  if (include === "weekly" || include === "both") {
-+    weekly = "<h2 style=\"color:#0b3fa8;font-size:16px\">주간 리포트</h2><p>" + escapeHtml(input.weeklyText || "주간 리포트 데이터가 없습니다.") + "</p>";
-+  }
-+  const link = input.viewUrl
-+    ? "<p><a href=\"" + escapeHtml(input.viewUrl) + "\" style=\"display:inline-block;background:#0b3fa8;color:#fff;text-decoration:none;padding:10px 14px;border-radius:8px\">보고서 보기</a></p><p style=\"color:#667085;font-size:12px\">이 링크는 14일 뒤 만료됩니다.</p>"
-+    : "";
-+  const html = "<!doctype html><html lang=\"ko\"><body style=\"margin:0;background:#f4f7fb;font-family:sans-serif;color:#102033\"><div style=\"max-width:560px;margin:0 auto;padding:16px\"><div style=\"background:#fff;border-radius:12px;padding:16px\"><p style=\"white-space:pre-wrap\">" + escapeHtml(intro) + "</p>" + analysis + weekly + link + "<p style=\"color:#667085;font-size:12px\">조회수나 성과를 보장하지 않습니다.</p></div></div></body></html>";
-+  return { subject, html, vars };
++  const built = sheetHtml(input);
++  const subject = fillTemplate(settings.subject || "{고객명} 리포트", built.vars);
++  return { subject, html: mailDocument(subject, built.inner), vars: built.vars };
++}
++
++function renderViewPage(input) {
++  const settings = input.settings || {};
++  const built = sheetHtml(Object.assign({}, input, { viewUrl: "" }));
++  const subject = fillTemplate(settings.subject || "{고객명} 리포트", built.vars);
++  const button = "<div class=\"no-print\" style=\"text-align:center;padding:16px 8px 0\"><button type=\"button\" onclick=\"window.print()\" style=\"font:inherit;background:#0b3fa8;color:#fff;border:0;border-radius:8px;padding:10px 16px;cursor:pointer\">PDF로 저장</button></div>";
++  const html = "<!doctype html><html lang=\"ko\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>" + escapeHtml(subject) + "</title><style>@media only screen and (max-width:480px){.container{width:100% !important}.stack{display:block !important;width:100% !important}}@media print{.no-print{display:none !important}body{background:#fff !important}.container{width:100% !important}@page{size:A4;margin:12mm}}</style></head><body style=\"margin:0;background:#f4f7fb;font-family:Arial,sans-serif;color:#102033\">" + button + "<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\"><tr><td align=\"center\" style=\"padding:8px\"><table role=\"presentation\" class=\"container\" width=\"600\" cellpadding=\"0\" cellspacing=\"0\" style=\"width:100%;max-width:600px\">" + built.inner + "</table></td></tr></table></body></html>";
++  return { subject, html };
 +}
 +
 +function clamp(value, min, max, fallback) {
@@ -236,6 +494,37 @@ diff -u -r -N a/lib/report-mail.js b/lib/report-mail.js
 +  return crypto.createHash("sha256").update(String(token)).digest("hex");
 +}
 +
++function asWeekly(value) {
++  if (value && Array.isArray(value.channels)) return value;
++  return null;
++}
++
++function mailInput(saved, extras, period) {
++  return {
++    settings: saved,
++    report: extras && extras.report,
++    weekly: asWeekly(extras && extras.weekly) || buildWeekly({ now: new Date() }),
++    clientName: extras && extras.clientName,
++    period,
++    mock: !!(extras && extras.mock) || !!(extras && extras.report && extras.report.mock),
++  };
++}
++
++function linkPayload(saved, extras, period) {
++  const input = mailInput(saved, extras, period);
++  return {
++    report: input.report,
++    weekly: input.weekly,
++    period,
++    clientName: input.clientName,
++    include: saved.include,
++    fromName: saved.fromName,
++    subject: saved.subject,
++    body: saved.body,
++    mock: input.mock,
++  };
++}
++
 +function createReportMail(options) {
 +  const opts = options || {};
 +  const env = opts.env || process.env;
@@ -304,15 +593,8 @@ diff -u -r -N a/lib/report-mail.js b/lib/report-mail.js
 +    if (!saved) fail(404, "메일 설정이 없습니다.");
 +    const report = extras && extras.report;
 +    const period = (extras && extras.period) || periodLabel(saved.schedule, nowFn());
-+    const viewUrl = issueLink(clientId, { report, weeklyText: extras && extras.weeklyText, period, clientName: extras && extras.clientName, include: saved.include });
-+    return renderEmail({
-+      settings: saved,
-+      report,
-+      clientName: extras && extras.clientName,
-+      period,
-+      weeklyText: extras && extras.weeklyText,
-+      viewUrl,
-+    });
++    const viewUrl = issueLink(clientId, linkPayload(saved, extras, period));
++    return renderEmail(Object.assign({ viewUrl }, mailInput(saved, extras, period)));
 +  }
 +
 +  async function sendNow(clientId, extras) {
@@ -393,21 +675,8 @@ diff -u -r -N a/lib/report-mail.js b/lib/report-mail.js
 +      const saved = store.load().settings[clientId];
 +      if (!saved) fail(404, "메일 설정이 없습니다.");
 +      const period = (extras && extras.period) || periodLabel(saved.schedule, nowFn());
-+      const viewUrl = issueLink(clientId, {
-+        report: extras && extras.report,
-+        weeklyText: extras && extras.weeklyText,
-+        period,
-+        clientName: extras && extras.clientName,
-+        include: saved.include,
-+      });
-+      return renderEmail({
-+        settings: saved,
-+        report: extras && extras.report,
-+        clientName: extras && extras.clientName,
-+        period,
-+        weeklyText: extras && extras.weeklyText,
-+        viewUrl,
-+      });
++      const viewUrl = issueLink(clientId, linkPayload(saved, extras, period));
++      return renderEmail(Object.assign({ viewUrl }, mailInput(saved, extras, period)));
 +    },
 +    sendNow,
 +    runScheduler,
@@ -554,11 +823,12 @@ diff -u -r -N a/lib/report-mail.js b/lib/report-mail.js
 +  }
 +  async function extras(session, clientId) {
 +    const report = source.loadReport ? await source.loadReport(session.email, clientId) : null;
-+    const weeklyText = source.loadWeekly ? await source.loadWeekly(session.email, clientId) : "";
++    const loaded = source.loadWeekly ? await source.loadWeekly(session.email, clientId) : null;
 +    return {
 +      report,
-+      weeklyText: weeklyText || "주간 리포트 데이터가 없습니다.",
++      weekly: asWeekly(loaded) || buildWeekly({ now: new Date(), email: session.email, clientId }),
 +      clientName: source.clientName ? source.clientName(session.email, clientId) : "",
++      mock: !!(report && report.mock),
 +    };
 +  }
 +  app.get("/api/report-mail/status", (req, res) => {
@@ -620,15 +890,20 @@ diff -u -r -N a/lib/report-mail.js b/lib/report-mail.js
 +  app.get("/r/:token", (req, res) => {
 +    const row = mail.readToken(req.params.token);
 +    if (!row) return res.status(404).type("html").send("링크가 없거나 만료되었습니다.");
-+    const message = renderEmail({
-+      settings: { include: row.payload.include || "both", subject: "", body: "" },
++    const page = renderViewPage({
++      settings: {
++        include: row.payload.include || "both",
++        subject: row.payload.subject || "",
++        body: row.payload.body || "",
++        fromName: row.payload.fromName || "",
++      },
 +      report: row.payload.report,
++      weekly: row.payload.weekly,
 +      clientName: row.payload.clientName,
 +      period: row.payload.period,
-+      weeklyText: row.payload.weeklyText,
-+      viewUrl: "",
++      mock: row.payload.mock,
 +    });
-+    res.type("html").send(message.html);
++    res.type("html").send(page.html);
 +  });
 +  if (source.scheduler !== false) {
 +    const timer = setInterval(() => {
@@ -636,7 +911,7 @@ diff -u -r -N a/lib/report-mail.js b/lib/report-mail.js
 +        const owner = mail.ownerEmail(clientId) || (source.ownerEmail ? source.ownerEmail(clientId) : "");
 +        return {
 +          report: source.loadReport ? await source.loadReport(owner, clientId) : null,
-+          weeklyText: source.loadWeekly ? await source.loadWeekly(owner, clientId) : "주간 리포트 데이터가 없습니다.",
++          weekly: asWeekly(source.loadWeekly ? await source.loadWeekly(owner, clientId) : null) || buildWeekly({ now: new Date(), email: owner, clientId }),
 +          clientName: source.clientName ? source.clientName(owner, clientId) : "",
 +        };
 +      }).catch(() => {});
@@ -650,6 +925,8 @@ diff -u -r -N a/lib/report-mail.js b/lib/report-mail.js
 +  mailEnabled,
 +  validEmail,
 +  fillTemplate,
++  buildWeekly,
++  renderViewPage,
 +  nextRun,
 +  slotKey,
 +  normalizeSettings,
@@ -660,8 +937,8 @@ diff -u -r -N a/lib/report-mail.js b/lib/report-mail.js
 +  WEEKDAYS,
 +};
 diff -u -r -N a/public/app.js b/public/app.js
---- a/public/app.js	2026-11-12 13:20:41.498472494 +0000
-+++ b/public/app.js	2026-11-12 13:20:41.498472494 +0000
+--- a/public/app.js	2026-11-12 13:36:55.760781635 +0000
++++ b/public/app.js	2026-11-12 13:36:55.760781635 +0000
 @@ -663,6 +663,8 @@
      document.getElementById("view-insights").classList.toggle("hidden", p !== "/insights");
      const viewAnalysis = document.getElementById("view-analysis");
@@ -853,8 +1130,8 @@ diff -u -r -N a/public/app.js b/public/app.js
  
    fetch("/api/me")
 diff -u -r -N a/public/index.html b/public/index.html
---- a/public/index.html	2026-11-12 13:20:41.498472494 +0000
-+++ b/public/index.html	2026-11-12 13:20:41.498472494 +0000
+--- a/public/index.html	2026-11-12 13:36:55.760781635 +0000
++++ b/public/index.html	2026-11-12 13:36:55.760781635 +0000
 @@ -125,6 +125,7 @@
          <a href="/scheduled" data-nav="/scheduled">예약</a>
          <a href="/insights" data-nav="/insights">조회수</a>
@@ -924,8 +1201,8 @@ diff -u -r -N a/public/index.html b/public/index.html
          <h2>매니아 취향 <span class="badge trends-badge">관리자 미리보기</span></h2>
          <p class="sub">인외·퍼리·수인처럼 매니아 취향 키워드로 찾은 최근 7일 유튜브 영상이에요. 비슷한 새 키워드가 보이면 조금씩 더 찾아요.</p>
 diff -u -r -N a/public/styles.css b/public/styles.css
---- a/public/styles.css	2026-11-12 13:20:41.498472494 +0000
-+++ b/public/styles.css	2026-11-12 13:20:41.498472494 +0000
+--- a/public/styles.css	2026-11-12 13:36:55.764781628 +0000
++++ b/public/styles.css	2026-11-12 13:36:55.764781628 +0000
 @@ -2580,3 +2580,18 @@
    .sns-strengths, .sns-nexts { grid-template-columns: 1fr 1fr; }
    .sns-foot { margin-left: -16px; margin-right: -16px; flex-direction: column; }
@@ -947,15 +1224,15 @@ diff -u -r -N a/public/styles.css b/public/styles.css
 +}
 diff -u -r -N a/test/report-mail.test.js b/test/report-mail.test.js
 --- a/test/report-mail.test.js	1970-01-01 00:00:00.000000000 +0000
-+++ b/test/report-mail.test.js	2026-11-12 13:20:41.502472594 +0000
-@@ -0,0 +1,109 @@
++++ b/test/report-mail.test.js	2026-11-12 13:36:55.764781628 +0000
+@@ -0,0 +1,204 @@
 +const fs = require("fs");
 +const os = require("os");
 +const path = require("path");
 +const test = require("node:test");
 +const assert = require("node:assert/strict");
 +const express = require("express");
-+const { createReportMail, fillTemplate, nextRun, validEmail, mountReportMail, mailEnabled } = require("../lib/report-mail");
++const { createReportMail, fillTemplate, nextRun, validEmail, mountReportMail, mailEnabled, buildWeekly, renderEmail, renderViewPage } = require("../lib/report-mail");
 +
 +function harness(now) {
 +  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "report-mail-"));
@@ -1016,6 +1293,101 @@ diff -u -r -N a/test/report-mail.test.js b/test/report-mail.test.js
 +  assert.equal(sent[0].html.includes("999"), false);
 +});
 +
++function dayValues(start, days, views) {
++  const out = [];
++  let cursor = start;
++  for (let i = 0; i < days; i += 1) {
++    out.push({ date: cursor, dayViews: views, followers: 100 + i, posts: 10 + i });
++    const [year, month, day] = cursor.split("-").map(Number);
++    cursor = new Date(Date.UTC(year, month - 1, day + 1)).toISOString().slice(0, 10);
++  }
++  return out;
++}
++
++test("weekly uses only complete 7-day windows and skips missing channels", () => {
++  const now = new Date("2026-11-12T03:00:00.000Z");
++  const weekly = buildWeekly({
++    now,
++    channels: [
++      {
++        id: "youtube",
++        connected: true,
++        points: [
++          { date: "2026-10-29", views: 1000, followers: 100, posts: 10 },
++          { date: "2026-11-05", views: 1100, followers: 110, posts: 12 },
++          { date: "2026-11-12", views: 1250, followers: 108, posts: 14 },
++        ],
++      },
++      {
++        id: "instagram",
++        connected: true,
++        points: dayValues("2026-10-30", 7, 10).concat(dayValues("2026-11-06", 7, 20)),
++      },
++      { id: "facebook", connected: false },
++      { id: "threads", connected: true, points: [{ date: "2026-11-12", followers: 3, posts: 1, dayViews: 5 }] },
++      { id: "tiktok", connected: true, points: [{ date: "2026-10-29", views: 10 }, { date: "2026-11-12", views: 40 }] },
++    ],
++  });
++  const youtube = weekly.channels.find((item) => item.id === "youtube");
++  assert.equal(youtube.metrics.views.current, 150);
++  assert.equal(youtube.metrics.views.previous, 100);
++  assert.equal(youtube.metrics.views.change, 50);
++  assert.equal(youtube.metrics.followers.current, -2);
++  assert.equal(youtube.metrics.followers.change, -120);
++  assert.equal(youtube.metrics.posts.current, 2);
++  assert.equal(youtube.metrics.posts.previous, 2);
++  assert.equal(youtube.metrics.posts.change, 0);
++  const instagram = weekly.channels.find((item) => item.id === "instagram");
++  assert.equal(instagram.metrics.views.current, 140);
++  assert.equal(instagram.metrics.views.previous, 70);
++  assert.equal(instagram.metrics.views.change, 100);
++  assert.equal(weekly.channels.find((item) => item.id === "facebook").stateLabel, "연결 안 됨");
++  assert.equal(weekly.channels.find((item) => item.id === "threads").stateLabel, "데이터 모으는 중");
++  assert.equal(weekly.channels.find((item) => item.id === "tiktok").stateLabel, "데이터 모으는 중");
++  assert.equal(weekly.channels.find((item) => item.id === "x").stateLabel, "연결 안 됨");
++  const fromFile = buildWeekly({
++    now,
++    email: "owner@example.test",
++    clientId: "shop",
++    connections: { youtube: { hasToken: true, account: { displayName: "채널" } } },
++    snapshots: {
++      days: {
++        "2026-10-29": { "owner@example.test|shop|youtube": { views: 100, followers: 10, videos: 1 } },
++        "2026-11-05": { "owner@example.test|shop|youtube": { views: 100, followers: 10, videos: 1 } },
++        "2026-11-12": { "owner@example.test|shop|youtube": { views: 150, followers: 10, videos: 2 } },
++      },
++    },
++  });
++  const stored = fromFile.channels.find((item) => item.id === "youtube");
++  assert.equal(stored.metrics.views.current, 50);
++  assert.equal(stored.metrics.views.previous, 0);
++  assert.equal(stored.metrics.views.change, null);
++  assert.equal(fromFile.channels.find((item) => item.id === "naver-clip").stateLabel, "연결 안 됨");
++  const message = renderEmail({
++    settings: { fromName: "에테르", include: "both", subject: "{고객명}", body: "본문" },
++    report,
++    weekly,
++    clientName: "김밥천국",
++    period: "2026년 11월 12일 주간",
++    viewUrl: "https://1post.kr/r/abc",
++    mock: true,
++  });
++  assert.equal(message.html.includes("<script"), false);
++  assert.equal(message.html.includes("보고서 보기"), true);
++  assert.equal(message.html.includes("예시 데이터"), true);
++  assert.equal(message.html.includes("+50%"), true);
++  assert.equal(message.html.includes("데이터 모으는 중"), true);
++  const page = renderViewPage({
++    settings: { fromName: "에테르", include: "both", body: "본문" },
++    report,
++    weekly,
++    clientName: "김밥천국",
++    period: "2026년 11월 12일 주간",
++  });
++  assert.equal(page.html.includes("PDF로 저장"), true);
++  assert.equal(page.html.includes("@media print"), true);
++});
++
 +test("manual sends stop after the daily limit and strangers cannot edit", async () => {
 +  const { mail } = harness(new Date("2026-11-12T03:00:00.000Z"));
 +  mail.saveSettings("shop", { fromEmail: "ether@1post.kr", to: ["client@example.test"], subject: "안녕", body: "본문" });
@@ -1064,11 +1436,11 @@ diff -u -r -N a/server.js b/server.js
 @@ -26,5 +26,6 @@
  const { createMcpStore } = require("./lib/mcp-store");
  const { mountYtResearch } = require("./lib/yt-research");
-+const { mountReportMail } = require("./lib/report-mail");
++const { mountReportMail, buildWeekly } = require("./lib/report-mail");
  
  const PORT = Number(process.env.PORT || 3000);
  const HOST = process.env.HOST || "0.0.0.0";
-@@ -4488,7 +4489,53 @@
+@@ -4488,7 +4489,71 @@
  mountYtResearch(app, {
    getSession,
  });
@@ -1115,7 +1487,25 @@ diff -u -r -N a/server.js b/server.js
 +      return null;
 +    }
 +  },
-+  loadWeekly: async () => "",
++  loadWeekly: async (email, clientId) => {
++    let snapshots = { days: {} };
++    let connections = null;
++    try {
++      if (typeof channelAnalysis !== "undefined" && channelAnalysis && typeof channelAnalysis.readSnapshotFile === "function") {
++        snapshots = channelAnalysis.readSnapshotFile();
++      }
++    } catch (err) {
++      snapshots = { days: {} };
++    }
++    try {
++      if (email && clientId && typeof channelAnalysis !== "undefined" && channelAnalysis && typeof channelAnalysis.readConnections === "function") {
++        connections = channelAnalysis.readConnections(email, clientId);
++      }
++    } catch (err) {
++      connections = null;
++    }
++    return buildWeekly({ now: new Date(), email: email, clientId: clientId, snapshots: snapshots, connections: connections });
++  },
 +  publicBase: process.env.PUBLIC_BASE_URL || "",
 +});
 +
