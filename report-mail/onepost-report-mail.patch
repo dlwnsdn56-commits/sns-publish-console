@@ -1,0 +1,1514 @@
+diff -u -r -N a/lib/report-mail.js b/lib/report-mail.js
+--- a/lib/report-mail.js	1970-01-01 00:00:00.000000000 +0000
++++ b/lib/report-mail.js	2026-11-12 13:36:55.764781628 +0000
+@@ -0,0 +1,934 @@
++const crypto = require("crypto");
++const fs = require("fs");
++const net = require("net");
++const path = require("path");
++const tls = require("tls");
++
++const WEEKDAYS = ["일", "월", "화", "수", "목", "금", "토"];
++const TOKEN_TTL_MS = 14 * 24 * 60 * 60 * 1000;
++const MAX_RECIPIENTS = 10;
++const DAILY_SEND_LIMIT = 5;
++
++function mailEnabled(env) {
++  return String((env || process.env).REPORT_MAIL_ENABLED || "") === "1";
++}
++
++function validEmail(value) {
++  const text = String(value || "").trim();
++  if (!text || text.length > 254 || /[\r\n\0]/.test(text)) return false;
++  return /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(text);
++}
++
++function cleanList(list) {
++  const out = [];
++  (Array.isArray(list) ? list : String(list || "").split(/[,;\n]/)).forEach((item) => {
++    const text = String(item || "").trim();
++    if (text && !out.includes(text)) out.push(text);
++  });
++  return out;
++}
++
++function kstParts(date) {
++  const fmt = new Intl.DateTimeFormat("en-US", {
++    timeZone: "Asia/Seoul",
++    year: "numeric",
++    month: "2-digit",
++    day: "2-digit",
++    hour: "2-digit",
++    minute: "2-digit",
++    weekday: "short",
++    hourCycle: "h23",
++  });
++  const parts = {};
++  fmt.formatToParts(date).forEach((part) => {
++    parts[part.type] = part.value;
++  });
++  const weekday = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 }[parts.weekday];
++  return {
++    year: Number(parts.year),
++    month: Number(parts.month),
++    day: Number(parts.day),
++    hour: Number(parts.hour),
++    minute: Number(parts.minute),
++    weekday,
++  };
++}
++
++function kstStamp(year, month, day, hour, minute) {
++  const pad = (n) => String(n).padStart(2, "0");
++  return new Date(year + "-" + pad(month) + "-" + pad(day) + "T" + pad(hour) + ":" + pad(minute) + ":00+09:00");
++}
++
++function nextRun(now, schedule) {
++  const spec = schedule || {};
++  const hour = Math.min(23, Math.max(0, Number(spec.hour) || 0));
++  const minute = Math.min(59, Math.max(0, Number(spec.minute) || 0));
++  const parts = kstParts(now);
++  if (spec.type === "monthly") {
++    let year = parts.year;
++    let month = parts.month;
++    let when = kstStamp(year, month, 1, hour, minute);
++    if (when.getTime() <= now.getTime()) {
++      month += 1;
++      if (month > 12) {
++        month = 1;
++        year += 1;
++      }
++      when = kstStamp(year, month, 1, hour, minute);
++    }
++    return when;
++  }
++  const weekday = Math.min(6, Math.max(0, Number(spec.weekday) || 0));
++  let delta = (weekday - parts.weekday + 7) % 7;
++  let when = kstStamp(parts.year, parts.month, parts.day, hour, minute);
++  when = new Date(when.getTime() + delta * 86400000);
++  if (when.getTime() <= now.getTime()) when = new Date(when.getTime() + 7 * 86400000);
++  return when;
++}
++
++function slotKey(clientId, schedule, now) {
++  const parts = kstParts(now);
++  if ((schedule || {}).type === "monthly") {
++    return clientId + ":monthly:" + parts.year + "-" + String(parts.month).padStart(2, "0");
++  }
++  const weekday = Number((schedule || {}).weekday) || 0;
++  const hour = Number((schedule || {}).hour) || 0;
++  return clientId + ":weekly:" + parts.year + "-" + String(parts.month).padStart(2, "0") + "-" + String(parts.day).padStart(2, "0") + ":" + weekday + ":" + hour;
++}
++
++function periodLabel(schedule, now) {
++  const parts = kstParts(now);
++  if ((schedule || {}).type === "monthly") return parts.year + "년 " + parts.month + "월";
++  return parts.year + "년 " + parts.month + "월 " + parts.day + "일 주간";
++}
++
++function fillTemplate(text, vars) {
++  return String(text || "").replace(/\{(고객명|기간|채널수)\}/g, (all, key) => {
++    if (key === "고객명") return String(vars.clientName || "");
++    if (key === "기간") return String(vars.period || "");
++    if (key === "채널수") return String(vars.channelCount == null ? "" : vars.channelCount);
++    return all;
++  });
++}
++
++function escapeHtml(value) {
++  return String(value == null ? "" : value)
++    .replace(/&/g, "&amp;")
++    .replace(/</g, "&lt;")
++    .replace(/>/g, "&gt;")
++    .replace(/"/g, "&quot;");
++}
++
++const MAIL_CHANNELS = [
++  { id: "youtube", name: "유튜브", color: "#FF0033", followerLabel: "구독자" },
++  { id: "instagram", name: "인스타그램", color: "#E1306C", followerLabel: "팔로워", dailyViews: true },
++  { id: "facebook", name: "페이스북", color: "#1877F2", followerLabel: "팔로워" },
++  { id: "threads", name: "스레드", color: "#111111", followerLabel: "팔로워", dailyViews: true },
++  { id: "tiktok", name: "틱톡", color: "#111111", followerLabel: "팔로워" },
++  { id: "x", name: "X", color: "#111111", followerLabel: "팔로워" },
++  { id: "naver-clip", name: "네이버 클립", color: "#03C75A", followerLabel: "팔로워" },
++];
++
++function ymdOf(date) {
++  const parts = kstParts(date);
++  return parts.year + "-" + String(parts.month).padStart(2, "0") + "-" + String(parts.day).padStart(2, "0");
++}
++
++function addDays(ymd, days) {
++  const [year, month, day] = ymd.split("-").map(Number);
++  const next = new Date(Date.UTC(year, month - 1, day + days));
++  return next.toISOString().slice(0, 10);
++}
++
++function daySpan(later, earlier) {
++  const end = Date.parse(later + "T00:00:00Z");
++  const start = Date.parse(earlier + "T00:00:00Z");
++  return Math.round((end - start) / 86400000);
++}
++
++function finiteOrNull(value) {
++  const number = Number(value);
++  return Number.isFinite(number) ? number : null;
++}
++
++function datesAfterThrough(after, until) {
++  const out = [];
++  let cursor = addDays(after, 1);
++  while (cursor <= until) {
++    out.push(cursor);
++    cursor = addDays(cursor, 1);
++  }
++  return out;
++}
++
++function latestAtOrBefore(points, ymd, key) {
++  let found = null;
++  points.forEach((point) => {
++    if (point.date <= ymd && Number.isFinite(point[key])) found = point;
++  });
++  return found;
++}
++
++function deltaCumulative(points, key, from, to) {
++  const newer = latestAtOrBefore(points, to, key);
++  const older = latestAtOrBefore(points, from, key);
++  if (!newer || !older || newer.date <= from) return null;
++  if (daySpan(newer.date, older.date) > 8) return null;
++  return newer[key] - older[key];
++}
++
++function sumDaily(points, key, from, to) {
++  const byDate = {};
++  points.forEach((point) => {
++    if (Number.isFinite(point[key])) byDate[point.date] = point[key];
++  });
++  const days = datesAfterThrough(from, to);
++  if (!days.length || days.some((date) => !Number.isFinite(byDate[date]))) return null;
++  return days.reduce((sum, date) => sum + byDate[date], 0);
++}
++
++function changePercent(current, previous) {
++  if (!Number.isFinite(current) || !Number.isFinite(previous) || previous === 0) return null;
++  return Math.round(((current - previous) / Math.abs(previous)) * 100);
++}
++
++function normalizePoints(points) {
++  return (points || []).map((point) => ({
++    date: String(point.date || "").slice(0, 10),
++    views: finiteOrNull(point.views),
++    dayViews: finiteOrNull(point.dayViews),
++    followers: finiteOrNull(point.followers),
++    posts: finiteOrNull(point.posts != null ? point.posts : point.videos),
++  })).filter((point) => /^\d{4}-\d{2}-\d{2}$/.test(point.date)).sort((a, b) => a.date.localeCompare(b.date));
++}
++
++function pointsFromSnapshots(snapshots, email, clientId, platform) {
++  const key = String(email || "").toLowerCase() + "|" + clientId + "|" + platform;
++  const days = snapshots && snapshots.days;
++  if (!days) return [];
++  return normalizePoints(Object.keys(days).map((date) => {
++    const row = days[date] && days[date][key];
++    if (!row) return null;
++    return {
++      date,
++      views: row.views,
++      dayViews: row.dayViews,
++      followers: row.followers,
++      posts: row.videos != null ? row.videos : row.posts,
++    };
++  }).filter(Boolean));
++}
++
++function channelConnected(connections, id) {
++  const row = connections && connections[id];
++  if (!row) return false;
++  return !!(row.connected || row.hasToken || row.account);
++}
++
++function metricPair(points, key, mode, start, mid, end) {
++  const current = mode === "daily" ? sumDaily(points, key, mid, end) : deltaCumulative(points, key, mid, end);
++  const previous = mode === "daily" ? sumDaily(points, key, start, mid) : deltaCumulative(points, key, start, mid);
++  return { current, previous, change: changePercent(current, previous) };
++}
++
++function buildWeekly(input) {
++  const source = input || {};
++  const now = source.now instanceof Date ? source.now : new Date();
++  const end = ymdOf(now);
++  const mid = addDays(end, -7);
++  const start = addDays(end, -14);
++  const provided = {};
++  (source.channels || []).forEach((item) => {
++    if (item && item.id) provided[item.id] = item;
++  });
++  const channels = MAIL_CHANNELS.map((meta) => {
++    const given = provided[meta.id];
++    let connected = false;
++    let points = [];
++    if (given) {
++      connected = given.connected !== false;
++      points = normalizePoints(given.points);
++    } else if (source.snapshots || source.connections) {
++      connected = channelConnected(source.connections, meta.id);
++      points = pointsFromSnapshots(source.snapshots, source.email, source.clientId, meta.id);
++    }
++    if (!connected) {
++      return { id: meta.id, name: meta.name, color: meta.color, state: "disconnected", stateLabel: "연결 안 됨", metrics: {} };
++    }
++    const viewsKey = meta.dailyViews ? "dayViews" : "views";
++    const givenMode = given && given.viewsMode === "daily";
++    const views = metricPair(points, givenMode ? "dayViews" : viewsKey, meta.dailyViews || givenMode ? "daily" : "cumulative", start, mid, end);
++    const followers = metricPair(points, "followers", "cumulative", start, mid, end);
++    const posts = metricPair(points, "posts", "cumulative", start, mid, end);
++    const metrics = {
++      views: Object.assign({ label: "조회" }, views),
++      followers: Object.assign({ label: meta.followerLabel }, followers),
++      posts: Object.assign({ label: "게시" }, posts),
++    };
++    const ready = [views, followers, posts].some((item) => Number.isFinite(item.current));
++    return {
++      id: meta.id,
++      name: meta.name,
++      color: meta.color,
++      state: ready ? "ok" : "collecting",
++      stateLabel: ready ? "확인된 값" : "데이터 모으는 중",
++      metrics,
++    };
++  });
++  return { start, mid, end, channels, mock: !!source.mock };
++}
++
++function formatNum(value) {
++  if (!Number.isFinite(Number(value))) return "";
++  const number = Math.round(Number(value));
++  const sign = number < 0 ? "-" : "";
++  return sign + Math.abs(number).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
++}
++
++function changeHtml(change) {
++  if (!Number.isFinite(change)) return "<span style=\"color:#667085;font-weight:normal\">비교 없음</span>";
++  if (change > 0) return "<span style=\"color:#067647;font-weight:bold\">+" + change + "%</span>";
++  if (change < 0) return "<span style=\"color:#b42318;font-weight:bold\">" + change + "%</span>";
++  return "<span style=\"color:#667085;font-weight:bold\">0%</span>";
++}
++
++function cardTable(inner) {
++  return "<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"background:#f7faff;border:1px solid #c9daf6;border-radius:10px\"><tr><td style=\"padding:8px 10px\">" + inner + "</td></tr></table>";
++}
++
++function nameRow(name, color) {
++  return "<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\"><tr><td width=\"10\" bgcolor=\"" + color + "\" style=\"width:8px;height:8px;background:" + color + ";font-size:0;line-height:8px;border-radius:8px\">&nbsp;</td><td style=\"padding-left:6px;font-size:13px;font-weight:bold;color:#102033\">" + escapeHtml(name) + "</td></tr></table>";
++}
++
++function pairCards(cards) {
++  let rows = "";
++  for (let i = 0; i < cards.length; i += 2) {
++    const right = cards[i + 1] || "";
++    rows += "<tr><td class=\"stack\" width=\"50%\" valign=\"top\" style=\"width:50%;padding:4px\">" + cards[i] + "</td><td class=\"stack\" width=\"50%\" valign=\"top\" style=\"width:50%;padding:4px\">" + right + "</td></tr>";
++  }
++  return "<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\">" + rows + "</table>";
++}
++
++function barRow(values) {
++  const nums = values.filter((value) => Number.isFinite(value) && value > 0);
++  if (nums.length < 2) return "";
++  const max = Math.max.apply(null, nums);
++  const cells = values.slice(0, 8).map((value) => {
++    const height = Number.isFinite(value) && value > 0 ? Math.max(4, Math.round((value / max) * 28)) : 2;
++    return "<td valign=\"bottom\" width=\"22\" style=\"padding:0 1px\"><div style=\"font-size:8px;line-height:10px;color:#344054;text-align:center\">" + escapeHtml(formatNum(value)) + "</div><table role=\"presentation\" width=\"12\" align=\"center\" cellpadding=\"0\" cellspacing=\"0\"><tr><td height=\"" + height + "\" bgcolor=\"#0b3fa8\" style=\"height:" + height + "px;background:#0b3fa8;font-size:0;line-height:" + height + "px\">&nbsp;</td></tr></table></td>";
++  }).join("");
++  return "<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" style=\"margin-top:6px\"><tr>" + cells + "</tr></table>";
++}
++
++function horizontalBar(value, max) {
++  if (!Number.isFinite(value) || value <= 0 || !Number.isFinite(max) || max <= 0) return "";
++  const width = Math.max(8, Math.round((value / max) * 100));
++  return "<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"margin-top:6px\"><tr><td width=\"" + width + "%\" height=\"8\" bgcolor=\"#0b3fa8\" style=\"height:8px;background:#0b3fa8;font-size:0;line-height:8px\">&nbsp;</td><td bgcolor=\"#e6eef8\" style=\"background:#e6eef8;font-size:0;line-height:8px\">&nbsp;</td></tr></table>";
++}
++
++function analysisCards(report) {
++  const channels = (report && report.channels) || [];
++  const source = channels.length ? channels : MAIL_CHANNELS.map((item) => ({ name: item.name, color: item.color, state: "collecting", stateLabel: "데이터 모으는 중", stats: [] }));
++  return pairCards(source.map((channel) => {
++    const color = channel.color || "#0b3fa8";
++    const ready = channel.state === "ok" && (channel.stats || []).length;
++    if (!ready) {
++      const label = channel.state === "disconnected" || /연결 안 됨/.test(String(channel.stateLabel || "")) ? "연결 안 됨" : "데이터 모으는 중";
++      return cardTable(nameRow(channel.name || "채널", color) + "<p style=\"margin:6px 0 0;font-size:12px;color:#667085\">" + label + "</p>");
++    }
++    const stats = (channel.stats || []).slice(0, 4).map((stat) => "<tr><td style=\"font-size:11px;color:#667085;padding:2px 0\">" + escapeHtml(stat.label) + "</td><td align=\"right\" style=\"font-size:14px;font-weight:bold;color:#102033\">" + escapeHtml(formatNum(stat.value)) + "</td></tr>").join("");
++    const spark = Array.isArray(channel.spark) ? channel.spark.map((value) => finiteOrNull(value)).filter((value) => value != null) : [];
++    return cardTable(nameRow(channel.name, color) + "<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\">" + stats + "</table>" + barRow(spark));
++  }));
++}
++
++function weeklyCards(weekly) {
++  const channels = weekly && weekly.channels ? weekly.channels : buildWeekly({}).channels;
++  const views = channels.map((channel) => channel.metrics && channel.metrics.views && channel.metrics.views.current).filter((value) => Number.isFinite(value) && value > 0);
++  const max = views.length ? Math.max.apply(null, views) : 0;
++  return pairCards(channels.map((channel) => {
++    if (channel.state !== "ok") {
++      return cardTable(nameRow(channel.name, channel.color || "#0b3fa8") + "<p style=\"margin:6px 0 0;font-size:12px;color:#667085\">" + escapeHtml(channel.stateLabel || "데이터 모으는 중") + "</p>");
++    }
++    const lines = ["views", "followers", "posts"].map((key) => {
++      const metric = channel.metrics[key];
++      if (!metric || !Number.isFinite(metric.current)) {
++        return "<tr><td style=\"font-size:12px;color:#667085;padding:2px 0\">" + escapeHtml(metric && metric.label || "") + "</td><td align=\"right\" style=\"font-size:12px;color:#667085\">데이터 모으는 중</td></tr>";
++      }
++      return "<tr><td style=\"font-size:12px;color:#667085;padding:2px 0\">" + escapeHtml(metric.label) + "</td><td align=\"right\" style=\"font-size:13px;font-weight:bold;color:#102033\">" + formatNum(metric.current) + " " + changeHtml(metric.change) + "</td></tr>";
++    }).join("");
++    const currentViews = channel.metrics.views && channel.metrics.views.current;
++    return cardTable(nameRow(channel.name, channel.color || "#0b3fa8") + "<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\">" + lines + "</table>" + horizontalBar(currentViews, max));
++  }));
++}
++
++function sheetHtml(input) {
++  const settings = input.settings || {};
++  const report = input.report;
++  const include = settings.include || "both";
++  const brand = settings.fromName || "원포스트";
++  const mock = !!(input.mock || (report && report.mock) || (input.weekly && input.weekly.mock));
++  const count = report && report.channels ? report.channels.filter((item) => item.state === "ok").length : 0;
++  const vars = { clientName: input.clientName || "", period: input.period || "", channelCount: count };
++  const intro = fillTemplate(settings.body || "", vars);
++  let body = "";
++  if (include === "analysis" || include === "both") {
++    const summary = report && report.summary ? "<p style=\"margin:8px 0 0;font-size:13px;line-height:1.5;color:#344054\">" + escapeHtml(report.summary) + "</p>" : "";
++    body += "<p style=\"margin:16px 0 6px;font-size:13px;font-weight:bold;letter-spacing:0.04em;color:#0b3fa8\">채널 분석</p>" + summary + analysisCards(report);
++  }
++  if (include === "weekly" || include === "both") {
++    body += "<p style=\"margin:16px 0 6px;font-size:13px;font-weight:bold;letter-spacing:0.04em;color:#0b3fa8\">주간 리포트</p><p style=\"margin:0 0 6px;font-size:12px;color:#667085\">최근 7일과 그 전 7일입니다. 두 구간이 확인된 숫자만 보여주고, 없는 날은 만들지 않습니다.</p>" + weeklyCards(input.weekly);
++  }
++  const link = input.viewUrl
++    ? "<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" style=\"margin-top:16px\"><tr><td bgcolor=\"#0b3fa8\" style=\"background:#0b3fa8;border-radius:8px\"><a href=\"" + escapeHtml(input.viewUrl) + "\" style=\"display:inline-block;padding:12px 18px;font-size:15px;font-weight:bold;color:#ffffff;text-decoration:none\">보고서 보기</a></td></tr></table><p style=\"margin:8px 0 0;font-size:12px;color:#667085\">이 링크는 14일 뒤 만료됩니다.</p>"
++    : "";
++  const example = mock ? "<p style=\"margin:8px 0 0;font-size:12px;color:#0b3fa8\">예시 데이터입니다. 실제 채널 숫자가 아닙니다.</p>" : "";
++  const inner = "<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"background:#ffffff\"><tr><td style=\"padding:20px\">"
++    + "<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\"><tr>"
++    + "<td valign=\"top\" style=\"color:#0b3fa8;font-size:20px;font-weight:bold\">" + escapeHtml(brand) + "<br><span style=\"font-size:11px;letter-spacing:2px;font-weight:normal\">REPORT</span></td>"
++    + "<td valign=\"top\" align=\"right\" style=\"color:#0b3fa8;font-size:16px;font-weight:bold\">SNS 현황 분석<br><span style=\"font-size:12px;color:#667085;font-weight:normal\">" + escapeHtml(input.period || "") + "</span></td>"
++    + "</tr></table>"
++    + "<p style=\"margin:14px 0 0;font-size:26px;font-weight:bold;color:#102033\">" + escapeHtml(input.clientName || "가게") + "</p>"
++    + "<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"margin-top:12px\"><tr><td bgcolor=\"#e8f1ff\" style=\"background:#e8f1ff;border:1px solid #b9d0f5;border-radius:12px;padding:12px 14px;font-size:14px;line-height:1.55;color:#102033\">" + escapeHtml(intro).replace(/\n/g, "<br>") + example + "</td></tr></table>"
++    + body + link
++    + "</td></tr><tr><td bgcolor=\"#0b1f44\" style=\"background:#0b1f44;color:#ffffff;padding:14px 20px;font-size:12px;line-height:1.5\">조회수나 성과를 보장하지 않습니다.</td></tr></table>";
++  return { vars, intro, inner };
++}
++
++function mailDocument(title, inner) {
++  return "<!doctype html><html lang=\"ko\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>" + escapeHtml(title) + "</title><style>@media only screen and (max-width:480px){.container{width:100% !important}.stack{display:block !important;width:100% !important;max-width:100% !important}}</style></head><body style=\"margin:0;padding:0;background:#f4f7fb\"><table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" bgcolor=\"#f4f7fb\" style=\"background:#f4f7fb\"><tr><td align=\"center\" style=\"padding:12px 8px\"><table role=\"presentation\" class=\"container\" width=\"600\" cellpadding=\"0\" cellspacing=\"0\" style=\"width:100%;max-width:600px;font-family:Arial,sans-serif;color:#102033\">" + inner + "</table></td></tr></table></body></html>";
++}
++
++function renderEmail(input) {
++  const settings = input.settings || {};
++  const built = sheetHtml(input);
++  const subject = fillTemplate(settings.subject || "{고객명} 리포트", built.vars);
++  return { subject, html: mailDocument(subject, built.inner), vars: built.vars };
++}
++
++function renderViewPage(input) {
++  const settings = input.settings || {};
++  const built = sheetHtml(Object.assign({}, input, { viewUrl: "" }));
++  const subject = fillTemplate(settings.subject || "{고객명} 리포트", built.vars);
++  const button = "<div class=\"no-print\" style=\"text-align:center;padding:16px 8px 0\"><button type=\"button\" onclick=\"window.print()\" style=\"font:inherit;background:#0b3fa8;color:#fff;border:0;border-radius:8px;padding:10px 16px;cursor:pointer\">PDF로 저장</button></div>";
++  const html = "<!doctype html><html lang=\"ko\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>" + escapeHtml(subject) + "</title><style>@media only screen and (max-width:480px){.container{width:100% !important}.stack{display:block !important;width:100% !important}}@media print{.no-print{display:none !important}body{background:#fff !important}.container{width:100% !important}@page{size:A4;margin:12mm}}</style></head><body style=\"margin:0;background:#f4f7fb;font-family:Arial,sans-serif;color:#102033\">" + button + "<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\"><tr><td align=\"center\" style=\"padding:8px\"><table role=\"presentation\" class=\"container\" width=\"600\" cellpadding=\"0\" cellspacing=\"0\" style=\"width:100%;max-width:600px\">" + built.inner + "</table></td></tr></table></body></html>";
++  return { subject, html };
++}
++
++function clamp(value, min, max, fallback) {
++  const number = Number(value);
++  if (!Number.isFinite(number)) return fallback;
++  return Math.min(max, Math.max(min, number));
++}
++
++function normalizeSettings(raw, clientId) {
++  const src = raw || {};
++  const include = ["analysis", "weekly", "both"].includes(src.include) ? src.include : "both";
++  const type = src.schedule && src.schedule.type === "monthly" ? "monthly" : "weekly";
++  const to = cleanList(src.to);
++  const cc = cleanList(src.cc);
++  const errors = [];
++  if (src.fromEmail && !validEmail(src.fromEmail)) errors.push("보내는 메일 주소를 확인해 주세요.");
++  if (src.replyTo && !validEmail(src.replyTo)) errors.push("답장 받을 메일 주소를 확인해 주세요.");
++  to.forEach((item) => { if (!validEmail(item)) errors.push("받는 메일 주소를 확인해 주세요."); });
++  cc.forEach((item) => { if (!validEmail(item)) errors.push("참조 메일 주소를 확인해 주세요."); });
++  if (to.length + cc.length > MAX_RECIPIENTS) errors.push("받는 사람과 참조는 합쳐서 10명까지입니다.");
++  return {
++    ok: errors.length === 0,
++    errors,
++    settings: {
++      clientId: String(clientId || src.clientId || ""),
++      enabled: !!src.enabled,
++      fromName: String(src.fromName || "").slice(0, 80),
++      fromEmail: String(src.fromEmail || "").trim(),
++      replyTo: String(src.replyTo || "").trim(),
++      to,
++      cc,
++      subject: String(src.subject || "{고객명} 채널 리포트 ({기간})").slice(0, 120),
++      body: String(src.body || "안녕하세요 {고객명}님.\n{기간} 리포트를 보내 드립니다. 확인된 채널은 {채널수}곳입니다.").slice(0, 4000),
++      include,
++      schedule: {
++        type,
++        weekday: clamp(src.schedule && src.schedule.weekday, 0, 6, 1),
++        hour: clamp(src.schedule && src.schedule.hour, 0, 23, 9),
++        minute: clamp(src.schedule && src.schedule.minute, 0, 59, 0),
++      },
++    },
++  };
++}
++
++function createMailStore(options) {
++  const file = (options && options.file) || path.join(process.cwd(), "data", "report-mail.json");
++  let cached = null;
++  function empty() {
++    return { settings: {}, sends: [], tokens: [], claims: {} };
++  }
++  function load() {
++    if (cached) return cached;
++    try {
++      cached = JSON.parse(fs.readFileSync(file, "utf8"));
++    } catch (err) {
++      if (!err || err.code !== "ENOENT") throw err;
++      cached = empty();
++    }
++    cached.settings = cached.settings || {};
++    cached.sends = cached.sends || [];
++    cached.tokens = cached.tokens || [];
++    cached.claims = cached.claims || {};
++    return cached;
++  }
++  function save() {
++    fs.mkdirSync(path.dirname(file), { recursive: true });
++    const tmp = file + "." + process.pid + ".tmp";
++    fs.writeFileSync(tmp, JSON.stringify(load()));
++    fs.renameSync(tmp, file);
++  }
++  return { load, save, file };
++}
++
++function hashToken(token) {
++  return crypto.createHash("sha256").update(String(token)).digest("hex");
++}
++
++function asWeekly(value) {
++  if (value && Array.isArray(value.channels)) return value;
++  return null;
++}
++
++function mailInput(saved, extras, period) {
++  return {
++    settings: saved,
++    report: extras && extras.report,
++    weekly: asWeekly(extras && extras.weekly) || buildWeekly({ now: new Date() }),
++    clientName: extras && extras.clientName,
++    period,
++    mock: !!(extras && extras.mock) || !!(extras && extras.report && extras.report.mock),
++  };
++}
++
++function linkPayload(saved, extras, period) {
++  const input = mailInput(saved, extras, period);
++  return {
++    report: input.report,
++    weekly: input.weekly,
++    period,
++    clientName: input.clientName,
++    include: saved.include,
++    fromName: saved.fromName,
++    subject: saved.subject,
++    body: saved.body,
++    mock: input.mock,
++  };
++}
++
++function createReportMail(options) {
++  const opts = options || {};
++  const env = opts.env || process.env;
++  const store = opts.store || createMailStore(opts);
++  const nowFn = opts.now || (() => new Date());
++  const transport = opts.transport || null;
++  const publicBase = String(opts.publicBase || env.PUBLIC_BASE_URL || "").replace(/\/$/, "");
++
++  function fail(status, message) {
++    const err = new Error(message);
++    err.status = status;
++    throw err;
++  }
++
++  function dayKey(date) {
++    const parts = kstParts(date);
++    return parts.year + "-" + parts.month + "-" + parts.day;
++  }
++
++  function sentToday(clientId, now) {
++    const day = dayKey(now);
++    return store.load().sends.filter((item) => item.clientId === clientId && item.day === day).length;
++  }
++
++  function remember(entry) {
++    const data = store.load();
++    data.sends.unshift(entry);
++    data.sends = data.sends.slice(0, 200);
++    store.save();
++  }
++
++  function issueLink(clientId, payload) {
++    const token = crypto.randomBytes(24).toString("hex");
++    store.load().tokens.push({
++      hash: hashToken(token),
++      clientId,
++      payload,
++      exp: nowFn().getTime() + TOKEN_TTL_MS,
++    });
++    store.save();
++    return publicBase ? publicBase + "/r/" + token : "/r/" + token;
++  }
++
++  function readToken(token) {
++    const hash = hashToken(token);
++    const row = store.load().tokens.find((item) => item.hash === hash);
++    if (!row || row.exp < nowFn().getTime()) return null;
++    return row;
++  }
++
++  async function deliver(settings, message) {
++    if (!transport || typeof transport.send !== "function") fail(503, "메일 서버가 설정되지 않았습니다.");
++    await transport.send({
++      fromName: settings.fromName,
++      fromEmail: settings.fromEmail,
++      replyTo: settings.replyTo || settings.fromEmail,
++      to: settings.to,
++      cc: settings.cc,
++      subject: message.subject,
++      html: message.html,
++    });
++  }
++
++  async function compose(clientId, extras) {
++    const saved = store.load().settings[clientId];
++    if (!saved) fail(404, "메일 설정이 없습니다.");
++    const report = extras && extras.report;
++    const period = (extras && extras.period) || periodLabel(saved.schedule, nowFn());
++    const viewUrl = issueLink(clientId, linkPayload(saved, extras, period));
++    return renderEmail(Object.assign({ viewUrl }, mailInput(saved, extras, period)));
++  }
++
++  async function sendNow(clientId, extras) {
++    const saved = store.load().settings[clientId];
++    if (!saved) fail(404, "메일 설정이 없습니다.");
++    const to = extras && Array.isArray(extras.to) ? extras.to : saved.to;
++    const cc = extras && Array.isArray(extras.cc) ? extras.cc : saved.cc;
++    if (!to.length) fail(400, "받는 메일 주소를 입력해 주세요.");
++    const now = nowFn();
++    if (sentToday(clientId, now) >= DAILY_SEND_LIMIT) fail(429, "오늘은 이 가게에서 더 보낼 수 없습니다.");
++    const message = await compose(clientId, extras);
++    const entry = { id: crypto.randomUUID(), clientId, at: now.toISOString(), day: dayKey(now), to, cc, kind: extras && extras.kind || "now", ok: false, error: "" };
++    try {
++      await deliver(Object.assign({}, saved, { to, cc }), message);
++      entry.ok = true;
++    } catch (err) {
++      entry.error = String((err && err.message) || "발송에 실패했습니다.").slice(0, 180);
++    }
++    remember(entry);
++    return { entry, message };
++  }
++
++  function claim(key) {
++    const data = store.load();
++    if (data.claims[key]) return false;
++    data.claims[key] = nowFn().toISOString();
++    store.save();
++    return true;
++  }
++
++  async function runScheduler(loadExtras) {
++    const now = nowFn();
++    const due = [];
++    Object.keys(store.load().settings).forEach((clientId) => {
++      const settings = store.load().settings[clientId];
++      if (!settings || !settings.enabled) return;
++      const partsNow = kstParts(now);
++      const reached = partsNow.hour > settings.schedule.hour || (partsNow.hour === settings.schedule.hour && partsNow.minute >= settings.schedule.minute);
++      const weeklyOk = settings.schedule.type !== "monthly" && partsNow.weekday === settings.schedule.weekday && reached;
++      const monthlyOk = settings.schedule.type === "monthly" && partsNow.day === 1 && reached;
++      if (!weeklyOk && !monthlyOk) return;
++      const key = slotKey(clientId, settings.schedule, now);
++      if (!claim(key)) return;
++      due.push(clientId);
++    });
++    const results = [];
++    for (const clientId of due) {
++      const extras = loadExtras ? await loadExtras(clientId) : {};
++      results.push(await sendNow(clientId, Object.assign({ kind: "schedule" }, extras || {})));
++    }
++    return results;
++  }
++
++  function history(clientId) {
++    return store.load().sends.filter((item) => item.clientId === clientId).slice(0, 30);
++  }
++
++  return {
++    getSettings(clientId) {
++      const saved = store.load().settings[clientId];
++      if (!saved) return null;
++      const copy = Object.assign({}, saved);
++      delete copy.ownerEmail;
++      return copy;
++    },
++    saveSettings(clientId, raw, actorEmail) {
++      const normalized = normalizeSettings(raw, clientId);
++      if (!normalized.ok) fail(400, normalized.errors[0]);
++      const existing = store.load().settings[clientId];
++      const ownerEmail = existing && existing.ownerEmail
++        ? existing.ownerEmail
++        : String(actorEmail || "").trim().toLowerCase();
++      store.load().settings[clientId] = Object.assign({}, normalized.settings, ownerEmail ? { ownerEmail } : {});
++      store.save();
++      return this.getSettings(clientId);
++    },
++    preview(clientId, extras) {
++      const saved = store.load().settings[clientId];
++      if (!saved) fail(404, "메일 설정이 없습니다.");
++      const period = (extras && extras.period) || periodLabel(saved.schedule, nowFn());
++      const viewUrl = issueLink(clientId, linkPayload(saved, extras, period));
++      return renderEmail(Object.assign({ viewUrl }, mailInput(saved, extras, period)));
++    },
++    sendNow,
++    runScheduler,
++    history,
++    readToken,
++    issueLink,
++    sentToday,
++    ownerEmail(clientId) {
++      const saved = store.load().settings[clientId];
++      return saved && saved.ownerEmail ? saved.ownerEmail : "";
++    },
++  };
++}
++
++function smtpRead(socket) {
++  return new Promise((resolve, reject) => {
++    let buf = "";
++    const onData = (chunk) => {
++      buf += chunk.toString("utf8");
++      const lines = buf.split(/\r?\n/).filter((line) => line.length);
++      if (lines.length && /^\d{3} /.test(lines[lines.length - 1])) {
++        socket.off("data", onData);
++        resolve(buf);
++      }
++    };
++    socket.on("data", onData);
++    socket.once("error", reject);
++  });
++}
++
++function smtpWrite(socket, line) {
++  socket.write(line + "\r\n");
++}
++
++async function createSmtpTransport(env) {
++  const host = String(env.SMTP_HOST || "");
++  const port = Number(env.SMTP_PORT || 587);
++  const user = String(env.SMTP_USER || "");
++  const pass = String(env.SMTP_PASS || "");
++  if (!host || !user || !pass) {
++    const err = new Error("메일 서버가 설정되지 않았습니다.");
++    err.status = 503;
++    throw err;
++  }
++  return {
++    async send(message) {
++      let socket = port === 465
++        ? tls.connect({ host, port, servername: host })
++        : net.connect({ host, port });
++      await new Promise((resolve, reject) => {
++        socket.once(port === 465 ? "secureConnect" : "connect", resolve);
++        socket.once("error", reject);
++      });
++      const expect = async () => {
++        const text = await smtpRead(socket);
++        if (!/^[23]/.test(text)) {
++          const err = new Error("메일 서버가 발송을 거절했습니다.");
++          err.status = 502;
++          throw err;
++        }
++        return text;
++      };
++      await expect();
++      smtpWrite(socket, "EHLO onepost");
++      let hello = await expect();
++      if (port !== 465) {
++        if (!/STARTTLS/i.test(hello)) {
++          socket.end();
++          const err = new Error("메일 서버가 보안 연결을 지원하지 않습니다.");
++          err.status = 503;
++          throw err;
++        }
++        smtpWrite(socket, "STARTTLS");
++        await expect();
++        socket = tls.connect({ socket, servername: host });
++        await new Promise((resolve, reject) => {
++          socket.once("secureConnect", resolve);
++          socket.once("error", reject);
++        });
++        smtpWrite(socket, "EHLO onepost");
++        await expect();
++      }
++      smtpWrite(socket, "AUTH LOGIN");
++      await expect();
++      smtpWrite(socket, Buffer.from(user).toString("base64"));
++      await expect();
++      smtpWrite(socket, Buffer.from(pass).toString("base64"));
++      await expect();
++      const headerFrom = message.fromEmail || user;
++      smtpWrite(socket, "MAIL FROM:<" + user + ">");
++      await expect();
++      for (const item of message.to.concat(message.cc || [])) {
++        smtpWrite(socket, "RCPT TO:<" + item + ">");
++        await expect();
++      }
++      smtpWrite(socket, "DATA");
++      await expect();
++      const headers = [
++        "From: " + (message.fromName || "OnePost") + " <" + headerFrom + ">",
++        "To: " + message.to.join(", "),
++        message.cc && message.cc.length ? "Cc: " + message.cc.join(", ") : "",
++        message.replyTo ? "Reply-To: " + message.replyTo : "",
++        "Subject: =?UTF-8?B?" + Buffer.from(message.subject).toString("base64") + "?=",
++        "MIME-Version: 1.0",
++        "Content-Type: text/html; charset=UTF-8",
++        "",
++        String(message.html || "").replace(/\r?\n\./g, "\n.."),
++        ".",
++      ].filter((line) => line !== undefined);
++      smtpWrite(socket, headers.join("\r\n"));
++      await expect();
++      smtpWrite(socket, "QUIT");
++      socket.end();
++    },
++  };
++}
++
++function mountReportMail(app, deps) {
++  const source = deps || {};
++  const env = source.env || process.env;
++  if (!mailEnabled(env)) {
++    app.use("/api/report-mail", (_req, res) => res.status(404).json({ error: "리포트 메일은 꺼져 있습니다." }));
++    return { enabled: false };
++  }
++  const mail = source.mail || createReportMail(Object.assign({}, source, {
++    env,
++    publicBase: source.publicBase || env.PUBLIC_BASE_URL || "",
++    transport: source.transport || {
++      async send(message) {
++        const smtp = await createSmtpTransport(env);
++        return smtp.send(message);
++      },
++    },
++  }));
++  function user(req) {
++    const session = source.getSession ? source.getSession(req) : null;
++    if (!session || !session.email) return null;
++    return session;
++  }
++  function allowed(session, clientId) {
++    if (!session) return false;
++    if (source.isAdmin && source.isAdmin(session.email)) return true;
++    return !!(source.ownsClient && source.ownsClient(session.email, clientId));
++  }
++  async function extras(session, clientId) {
++    const report = source.loadReport ? await source.loadReport(session.email, clientId) : null;
++    const loaded = source.loadWeekly ? await source.loadWeekly(session.email, clientId) : null;
++    return {
++      report,
++      weekly: asWeekly(loaded) || buildWeekly({ now: new Date(), email: session.email, clientId }),
++      clientName: source.clientName ? source.clientName(session.email, clientId) : "",
++      mock: !!(report && report.mock),
++    };
++  }
++  app.get("/api/report-mail/status", (req, res) => {
++    if (!user(req)) return res.status(401).json({ error: "로그인이 필요합니다." });
++    res.json({ enabled: true });
++  });
++  app.get("/api/report-mail/:clientId", (req, res) => {
++    const session = user(req);
++    if (!session) return res.status(401).json({ error: "로그인이 필요합니다." });
++    if (!allowed(session, req.params.clientId)) return res.status(403).json({ error: "이 가게의 메일을 볼 수 없습니다." });
++    res.json({ settings: mail.getSettings(req.params.clientId), history: mail.history(req.params.clientId) });
++  });
++  app.put("/api/report-mail/:clientId", (req, res) => {
++    const session = user(req);
++    if (!session) return res.status(401).json({ error: "로그인이 필요합니다." });
++    if (!allowed(session, req.params.clientId)) return res.status(403).json({ error: "이 가게의 메일을 고칠 수 없습니다." });
++    try {
++      res.json({ settings: mail.saveSettings(req.params.clientId, req.body || {}, session.email) });
++    } catch (err) {
++      res.status(err.status || 400).json({ error: err.message });
++    }
++  });
++  app.post("/api/report-mail/:clientId/preview", async (req, res) => {
++    const session = user(req);
++    if (!session) return res.status(401).json({ error: "로그인이 필요합니다." });
++    if (!allowed(session, req.params.clientId)) return res.status(403).json({ error: "이 가게의 메일을 볼 수 없습니다." });
++    try {
++      const data = await extras(session, req.params.clientId);
++      res.json(mail.preview(req.params.clientId, data));
++    } catch (err) {
++      res.status(err.status || 400).json({ error: err.message });
++    }
++  });
++  app.post("/api/report-mail/:clientId/test", async (req, res) => {
++    const session = user(req);
++    if (!session) return res.status(401).json({ error: "로그인이 필요합니다." });
++    if (!allowed(session, req.params.clientId)) return res.status(403).json({ error: "이 가게의 메일을 보낼 수 없습니다." });
++    if (!validEmail(session.email)) return res.status(400).json({ error: "로그인 메일 주소로 테스트할 수 없습니다." });
++    try {
++      const data = await extras(session, req.params.clientId);
++      const result = await mail.sendNow(req.params.clientId, Object.assign({ kind: "test", to: [session.email], cc: [] }, data));
++      res.json({ ok: result.entry.ok, error: result.entry.error });
++    } catch (err) {
++      res.status(err.status || 400).json({ error: err.message });
++    }
++  });
++  app.post("/api/report-mail/:clientId/send", async (req, res) => {
++    const session = user(req);
++    if (!session) return res.status(401).json({ error: "로그인이 필요합니다." });
++    if (!allowed(session, req.params.clientId)) return res.status(403).json({ error: "이 가게의 메일을 보낼 수 없습니다." });
++    try {
++      const data = await extras(session, req.params.clientId);
++      const result = await mail.sendNow(req.params.clientId, Object.assign({ kind: "now" }, data));
++      res.json({ ok: result.entry.ok, error: result.entry.error, history: mail.history(req.params.clientId) });
++    } catch (err) {
++      res.status(err.status || 400).json({ error: err.message });
++    }
++  });
++  app.get("/r/:token", (req, res) => {
++    const row = mail.readToken(req.params.token);
++    if (!row) return res.status(404).type("html").send("링크가 없거나 만료되었습니다.");
++    const page = renderViewPage({
++      settings: {
++        include: row.payload.include || "both",
++        subject: row.payload.subject || "",
++        body: row.payload.body || "",
++        fromName: row.payload.fromName || "",
++      },
++      report: row.payload.report,
++      weekly: row.payload.weekly,
++      clientName: row.payload.clientName,
++      period: row.payload.period,
++      mock: row.payload.mock,
++    });
++    res.type("html").send(page.html);
++  });
++  if (source.scheduler !== false) {
++    const timer = setInterval(() => {
++      mail.runScheduler(async (clientId) => {
++        const owner = mail.ownerEmail(clientId) || (source.ownerEmail ? source.ownerEmail(clientId) : "");
++        return {
++          report: source.loadReport ? await source.loadReport(owner, clientId) : null,
++          weekly: asWeekly(source.loadWeekly ? await source.loadWeekly(owner, clientId) : null) || buildWeekly({ now: new Date(), email: owner, clientId }),
++          clientName: source.clientName ? source.clientName(owner, clientId) : "",
++        };
++      }).catch(() => {});
++    }, 60 * 1000);
++    if (timer.unref) timer.unref();
++  }
++  return { enabled: true, mail };
++}
++
++module.exports = {
++  mailEnabled,
++  validEmail,
++  fillTemplate,
++  buildWeekly,
++  renderViewPage,
++  nextRun,
++  slotKey,
++  normalizeSettings,
++  renderEmail,
++  createReportMail,
++  createSmtpTransport,
++  mountReportMail,
++  WEEKDAYS,
++};
+diff -u -r -N a/public/app.js b/public/app.js
+--- a/public/app.js	2026-11-12 13:36:55.760781635 +0000
++++ b/public/app.js	2026-11-12 13:36:55.760781635 +0000
+@@ -663,6 +663,8 @@
+     document.getElementById("view-insights").classList.toggle("hidden", p !== "/insights");
+     const viewAnalysis = document.getElementById("view-analysis");
+     if (viewAnalysis) viewAnalysis.classList.toggle("hidden", p !== "/analysis");
++    const viewReportMail = document.getElementById("view-report-mail");
++    if (viewReportMail) viewReportMail.classList.toggle("hidden", p !== "/report-mail");
+     const viewYtResearch = document.getElementById("view-yt-research");
+     if (viewYtResearch) viewYtResearch.classList.toggle("hidden", p !== "/yt-research");
+     const viewYtReport = document.getElementById("view-yt-report");
+@@ -815,6 +817,8 @@
+       if (omnibox) omnibox.textContent = "인사이트";
+     } else if (p === "/analysis") {
+       if (omnibox) omnibox.textContent = "채널 분석";
++    } else if (p === "/report-mail") {
++      if (omnibox) omnibox.textContent = "리포트 메일";
+     } else if (p === "/yt-research") {
+       if (omnibox) omnibox.textContent = "유튜브 리서치";
+     } else if (p === "/yt-report") {
+@@ -841,6 +845,7 @@
+     if (p === "/naver") loadNaver();
+     if (p === "/insights") renderInsights();
+     if (p === "/analysis") renderChannelAnalysis();
++    if (p === "/report-mail") loadReportMail();
+     if (p === "/yt-research") loadYtResearch();
+     if (p === "/yt-report") renderYtReport();
+     if (p === "/trends") loadTrends();
+@@ -5816,6 +5821,163 @@
+       .catch(() => applyLoginProviders({}));
+   }
+ 
++  function rmClientId() {
++    const client = typeof getActiveClient === "function" ? getActiveClient() : null;
++    return client && client.id;
++  }
++
++  function rmPayload() {
++    return {
++      fromName: document.getElementById("rm-from-name").value,
++      fromEmail: document.getElementById("rm-from-email").value,
++      replyTo: document.getElementById("rm-reply").value,
++      to: document.getElementById("rm-to").value.split(/\n/).map((item) => item.trim()).filter(Boolean),
++      cc: document.getElementById("rm-cc").value.split(/\n/).map((item) => item.trim()).filter(Boolean),
++      subject: document.getElementById("rm-subject").value,
++      body: document.getElementById("rm-body").value,
++      include: document.getElementById("rm-include").value,
++      enabled: document.getElementById("rm-enabled").checked,
++      schedule: {
++        type: document.getElementById("rm-type").value,
++        weekday: Number(document.getElementById("rm-weekday").value),
++        hour: Number(document.getElementById("rm-hour").value),
++        minute: Number(document.getElementById("rm-minute").value),
++      },
++    };
++  }
++
++  function rmFill(settings) {
++    if (!settings) return;
++    document.getElementById("rm-from-name").value = settings.fromName || "";
++    document.getElementById("rm-from-email").value = settings.fromEmail || "";
++    document.getElementById("rm-reply").value = settings.replyTo || "";
++    document.getElementById("rm-to").value = (settings.to || []).join("\n");
++    document.getElementById("rm-cc").value = (settings.cc || []).join("\n");
++    document.getElementById("rm-subject").value = settings.subject || "";
++    document.getElementById("rm-body").value = settings.body || "";
++    document.getElementById("rm-include").value = settings.include || "both";
++    document.getElementById("rm-type").value = settings.schedule && settings.schedule.type === "monthly" ? "monthly" : "weekly";
++    document.getElementById("rm-weekday").value = String(settings.schedule ? settings.schedule.weekday : 1);
++    document.getElementById("rm-hour").value = settings.schedule ? settings.schedule.hour : 9;
++    document.getElementById("rm-minute").value = settings.schedule ? settings.schedule.minute : 0;
++    document.getElementById("rm-enabled").checked = !!settings.enabled;
++  }
++
++  function rmHistory(items) {
++    const list = document.getElementById("rm-history");
++    if (!list) return;
++    list.innerHTML = (items || []).map((item) => {
++      const when = item.at ? new Date(item.at).toLocaleString("ko-KR", { timeZone: "Asia/Seoul" }) : "";
++      const who = (item.to || []).join(", ");
++      const state = item.ok ? "성공" : "실패";
++      return "<li><b>" + esc(state) + "</b> " + esc(when) + " · " + esc(who) + (item.error ? " · " + esc(item.error) : "") + "</li>";
++    }).join("") || "<li>아직 보낸 메일이 없습니다.</li>";
++  }
++
++  async function loadReportMail() {
++    const off = document.getElementById("rm-off");
++    const status = document.getElementById("rm-status");
++    const id = rmClientId();
++    if (!id) {
++      if (status) status.textContent = "가게를 선택하세요.";
++      return;
++    }
++    const res = await fetch("/api/report-mail/" + encodeURIComponent(id));
++    const data = await res.json().catch(() => ({}));
++    if (res.status === 404) {
++      if (off) off.hidden = false;
++      return;
++    }
++    if (!res.ok) {
++      if (status) status.textContent = data.error || "설정을 불러오지 못했습니다.";
++      return;
++    }
++    if (off) off.hidden = true;
++    rmFill(data.settings);
++    rmHistory(data.history);
++  }
++
++  async function loadReportMailStatus() {
++    const link = document.getElementById("report-mail-nav");
++    if (!link) return;
++    try {
++      const res = await fetch("/api/report-mail/status");
++      if (!res.ok) return;
++      views["/report-mail"] = "view-report-mail";
++      link.hidden = false;
++      if (location.pathname.replace(/\/+$/, "") === "/report-mail") showView();
++    } catch (_err) {
++      link.hidden = true;
++    }
++  }
++
++  function bindReportMail() {
++    const form = document.getElementById("rm-form");
++    if (!form || form.dataset.bound) return;
++    form.dataset.bound = "1";
++    const status = () => document.getElementById("rm-status");
++    async function save() {
++      const id = rmClientId();
++      const res = await fetch("/api/report-mail/" + encodeURIComponent(id), {
++        method: "PUT",
++        headers: { "Content-Type": "application/json" },
++        body: JSON.stringify(rmPayload()),
++      });
++      const data = await res.json().catch(() => ({}));
++      if (!res.ok) throw new Error(data.error || "저장하지 못했습니다.");
++      return data;
++    }
++    document.getElementById("rm-save").addEventListener("click", async () => {
++      try {
++        await save();
++        status().textContent = "저장했습니다.";
++      } catch (err) {
++        status().textContent = err.message;
++      }
++    });
++    document.getElementById("rm-preview").addEventListener("click", async () => {
++      try {
++        await save();
++        const id = rmClientId();
++        const res = await fetch("/api/report-mail/" + encodeURIComponent(id) + "/preview", { method: "POST" });
++        const data = await res.json().catch(() => ({}));
++        if (!res.ok) throw new Error(data.error || "미리보기를 만들지 못했습니다.");
++        document.getElementById("rm-preview-frame").srcdoc = data.html || "";
++        status().textContent = data.subject || "미리보기입니다.";
++      } catch (err) {
++        status().textContent = err.message;
++      }
++    });
++    document.getElementById("rm-test").addEventListener("click", async () => {
++      try {
++        await save();
++        const id = rmClientId();
++        const res = await fetch("/api/report-mail/" + encodeURIComponent(id) + "/test", { method: "POST" });
++        const data = await res.json().catch(() => ({}));
++        if (!res.ok) throw new Error(data.error || "테스트 메일을 보내지 못했습니다.");
++        status().textContent = data.ok ? "테스트 메일을 보냈습니다." : (data.error || "테스트 발송에 실패했습니다.");
++        await loadReportMail();
++      } catch (err) {
++        status().textContent = err.message;
++      }
++    });
++    document.getElementById("rm-send").addEventListener("click", async () => {
++      try {
++        await save();
++        const id = rmClientId();
++        const res = await fetch("/api/report-mail/" + encodeURIComponent(id) + "/send", { method: "POST" });
++        const data = await res.json().catch(() => ({}));
++        if (!res.ok) throw new Error(data.error || "메일을 보내지 못했습니다.");
++        rmHistory(data.history);
++        status().textContent = data.ok ? "메일을 보냈습니다." : (data.error || "발송에 실패했습니다.");
++      } catch (err) {
++        status().textContent = err.message;
++      }
++    });
++  }
++  bindReportMail();
++  loadReportMailStatus();
++
+   loadLoginProviders();
+ 
+   fetch("/api/me")
+diff -u -r -N a/public/index.html b/public/index.html
+--- a/public/index.html	2026-11-12 13:36:55.760781635 +0000
++++ b/public/index.html	2026-11-12 13:36:55.760781635 +0000
+@@ -125,6 +125,7 @@
+         <a href="/scheduled" data-nav="/scheduled">예약</a>
+         <a href="/insights" data-nav="/insights">조회수</a>
+         <a href="/analysis" data-nav="/analysis">채널 분석</a>
++        <a href="/report-mail" data-nav="/report-mail" id="report-mail-nav" hidden>리포트 메일</a>
+         <a href="/yt-research" data-nav="/yt-research">유튜브 리서치</a>
+         <a href="/mcp/guide">AI 연결</a>
+         <a href="/trends" data-nav="/trends" id="trends-nav-link" hidden>트렌드</a>
+@@ -864,6 +865,59 @@
+         </div>
+       </section>
+ 
++      <section id="view-report-mail" class="hidden">
++        <h2>리포트 메일</h2>
++        <p class="sub">이 가게의 채널 분석과 주간 리포트를 고객 메일로 보냅니다. 기능이 꺼져 있으면 보내지 않습니다.</p>
++        <p class="msg err" id="rm-off" hidden>리포트 메일은 꺼져 있습니다.</p>
++        <form id="rm-form" class="rm-form">
++          <label>보내는 사람 이름 <input id="rm-from-name" maxlength="80" placeholder="에테르"></label>
++          <label>보내는 메일 <input id="rm-from-email" type="email" placeholder="ether@1post.kr"></label>
++          <label>답장 받을 메일 <input id="rm-reply" type="email" placeholder="비우면 보내는 메일"></label>
++          <label>받는 사람 <textarea id="rm-to" rows="3" placeholder="고객 메일, 한 줄에 하나"></textarea></label>
++          <label>참조 <textarea id="rm-cc" rows="2" placeholder="없으면 비움"></textarea></label>
++          <label>제목 <input id="rm-subject" maxlength="120" value="{고객명} 채널 리포트 ({기간})"></label>
++          <label>본문 <textarea id="rm-body" rows="5">{고객명}님, {기간} 리포트입니다. 확인된 채널은 {채널수}곳입니다.</textarea></label>
++          <label>넣을 보고서
++            <select id="rm-include">
++              <option value="both">채널 분석과 주간 리포트</option>
++              <option value="analysis">채널 분석만</option>
++              <option value="weekly">주간 리포트만</option>
++            </select>
++          </label>
++          <label>주기
++            <select id="rm-type">
++              <option value="weekly">매주</option>
++              <option value="monthly">매월 1일</option>
++            </select>
++          </label>
++          <label>요일
++            <select id="rm-weekday">
++              <option value="1" selected>월</option>
++              <option value="2">화</option>
++              <option value="3">수</option>
++              <option value="4">목</option>
++              <option value="5">금</option>
++              <option value="6">토</option>
++              <option value="0">일</option>
++            </select>
++          </label>
++          <label>시 <input id="rm-hour" type="number" min="0" max="23" value="9"></label>
++          <label>분 <input id="rm-minute" type="number" min="0" max="59" value="0"></label>
++          <label class="rm-check"><input id="rm-enabled" type="checkbox"> 자동 발송 켜기</label>
++          <div class="rm-actions">
++            <button type="button" class="btn" id="rm-save">저장</button>
++            <button type="button" class="btn" id="rm-preview">미리보기</button>
++            <button type="button" class="btn" id="rm-test">나에게 테스트 발송</button>
++            <button type="button" class="btn primary" id="rm-send">지금 보내기</button>
++          </div>
++        </form>
++        <p class="hint" id="rm-status"></p>
++        <h3>미리보기</h3>
++        <iframe id="rm-preview-frame" class="rm-preview" title="메일 미리보기" sandbox=""></iframe>
++        <h3>발송 기록</h3>
++        <ul id="rm-history" class="rm-history"></ul>
++      </section>
++
+       <section id="view-mania" class="hidden">
+         <h2>매니아 취향 <span class="badge trends-badge">관리자 미리보기</span></h2>
+         <p class="sub">인외·퍼리·수인처럼 매니아 취향 키워드로 찾은 최근 7일 유튜브 영상이에요. 비슷한 새 키워드가 보이면 조금씩 더 찾아요.</p>
+diff -u -r -N a/public/styles.css b/public/styles.css
+--- a/public/styles.css	2026-11-12 13:36:55.764781628 +0000
++++ b/public/styles.css	2026-11-12 13:36:55.764781628 +0000
+@@ -2580,3 +2580,18 @@
+   .sns-strengths, .sns-nexts { grid-template-columns: 1fr 1fr; }
+   .sns-foot { margin-left: -16px; margin-right: -16px; flex-direction: column; }
+ }
++#report-mail-nav[hidden] { display: none !important; }
++.rm-form { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; max-width: 760px; }
++.rm-form label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
++.rm-form input, .rm-form select, .rm-form textarea { font: inherit; color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
++.rm-form textarea { min-height: 72px; }
++.rm-check { flex-direction: row; align-items: center; }
++.rm-actions { display: flex; flex-wrap: wrap; gap: 8px; grid-column: 1 / -1; }
++.rm-actions .btn { width: auto; }
++.rm-preview { width: 100%; max-width: 560px; height: 420px; border: 1px solid var(--line); border-radius: 12px; background: #fff; }
++.rm-history { list-style: none; padding: 0; max-width: 760px; }
++.rm-history li { border-bottom: 1px solid var(--line); padding: 8px 0; font-size: 13px; }
++@media (max-width: 800px) {
++  .rm-form { grid-template-columns: 1fr; }
++  .rm-preview { height: 520px; }
++}
+diff -u -r -N a/test/report-mail.test.js b/test/report-mail.test.js
+--- a/test/report-mail.test.js	1970-01-01 00:00:00.000000000 +0000
++++ b/test/report-mail.test.js	2026-11-12 13:36:55.764781628 +0000
+@@ -0,0 +1,204 @@
++const fs = require("fs");
++const os = require("os");
++const path = require("path");
++const test = require("node:test");
++const assert = require("node:assert/strict");
++const express = require("express");
++const { createReportMail, fillTemplate, nextRun, validEmail, mountReportMail, mailEnabled, buildWeekly, renderEmail, renderViewPage } = require("../lib/report-mail");
++
++function harness(now) {
++  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "report-mail-"));
++  const sent = [];
++  const mail = createReportMail({
++    file: path.join(dir, "mail.json"),
++    now: () => now,
++    publicBase: "https://1post.kr",
++    transport: { send: async (message) => sent.push(message) },
++  });
++  return { mail, sent };
++}
++
++const report = {
++  channels: [
++    { name: "유튜브", state: "ok", stateLabel: "확인된 값", stats: [{ label: "구독자", value: 10 }] },
++    { name: "페이스북", state: "disconnected", stateLabel: "연결 안 됨", stats: [] },
++  ],
++};
++
++test("template fills client, period, and channel count only", () => {
++  assert.equal(fillTemplate("안녕 {고객명} {기간} 채널 {채널수}", { clientName: "김밥천국", period: "2026년 11월", channelCount: 2 }), "안녕 김밥천국 2026년 11월 채널 2");
++  assert.equal(validEmail("ether@1post.kr"), true);
++  assert.equal(validEmail("bad\nether@1post.kr"), false);
++  assert.equal(validEmail("not-an-email"), false);
++  const { mail } = harness(new Date("2026-11-12T00:00:00.000Z"));
++  assert.throws(() => mail.saveSettings("shop", { fromEmail: "ether@1post.kr", to: ["not-an-email"] }), /받는 메일 주소를 확인해 주세요/);
++});
++
++test("weekly schedule lands on the next selected KST weekday", () => {
++  const now = new Date("2026-11-12T01:00:00.000Z");
++  const next = nextRun(now, { type: "weekly", weekday: 1, hour: 9, minute: 0 });
++  assert.equal(next.toISOString(), "2026-11-16T00:00:00.000Z");
++  const sunday = nextRun(new Date("2026-11-12T00:00:00.000Z"), { type: "weekly", weekday: 0, hour: 0, minute: 0 });
++  assert.equal(sunday.toISOString(), "2026-11-14T15:00:00.000Z");
++  const month = nextRun(new Date("2026-11-12T00:00:00.000Z"), { type: "monthly", hour: 9, minute: 0 });
++  assert.equal(month.toISOString(), "2026-12-01T00:00:00.000Z");
++});
++
++test("a scheduled slot is sent once even if the scheduler runs twice", async () => {
++  const { mail, sent } = harness(new Date("2026-11-09T00:05:00.000Z"));
++  mail.saveSettings("shop", {
++    fromName: "에테르",
++    fromEmail: "ether@1post.kr",
++    to: ["client@example.test"],
++    enabled: true,
++    include: "both",
++    schedule: { type: "weekly", weekday: 1, hour: 9, minute: 0 },
++    subject: "{고객명} {기간}",
++    body: "{고객명} 채널 {채널수}",
++  });
++  const load = async () => ({ report, clientName: "김밥천국", weeklyText: "주간 리포트 데이터가 없습니다." });
++  await mail.runScheduler(load);
++  await mail.runScheduler(load);
++  assert.equal(sent.length, 1);
++  assert.equal(sent[0].subject.includes("김밥천국"), true);
++  assert.equal(sent[0].html.includes("연결 안 됨"), true);
++  assert.equal(sent[0].html.includes("999"), false);
++});
++
++function dayValues(start, days, views) {
++  const out = [];
++  let cursor = start;
++  for (let i = 0; i < days; i += 1) {
++    out.push({ date: cursor, dayViews: views, followers: 100 + i, posts: 10 + i });
++    const [year, month, day] = cursor.split("-").map(Number);
++    cursor = new Date(Date.UTC(year, month - 1, day + 1)).toISOString().slice(0, 10);
++  }
++  return out;
++}
++
++test("weekly uses only complete 7-day windows and skips missing channels", () => {
++  const now = new Date("2026-11-12T03:00:00.000Z");
++  const weekly = buildWeekly({
++    now,
++    channels: [
++      {
++        id: "youtube",
++        connected: true,
++        points: [
++          { date: "2026-10-29", views: 1000, followers: 100, posts: 10 },
++          { date: "2026-11-05", views: 1100, followers: 110, posts: 12 },
++          { date: "2026-11-12", views: 1250, followers: 108, posts: 14 },
++        ],
++      },
++      {
++        id: "instagram",
++        connected: true,
++        points: dayValues("2026-10-30", 7, 10).concat(dayValues("2026-11-06", 7, 20)),
++      },
++      { id: "facebook", connected: false },
++      { id: "threads", connected: true, points: [{ date: "2026-11-12", followers: 3, posts: 1, dayViews: 5 }] },
++      { id: "tiktok", connected: true, points: [{ date: "2026-10-29", views: 10 }, { date: "2026-11-12", views: 40 }] },
++    ],
++  });
++  const youtube = weekly.channels.find((item) => item.id === "youtube");
++  assert.equal(youtube.metrics.views.current, 150);
++  assert.equal(youtube.metrics.views.previous, 100);
++  assert.equal(youtube.metrics.views.change, 50);
++  assert.equal(youtube.metrics.followers.current, -2);
++  assert.equal(youtube.metrics.followers.change, -120);
++  assert.equal(youtube.metrics.posts.current, 2);
++  assert.equal(youtube.metrics.posts.previous, 2);
++  assert.equal(youtube.metrics.posts.change, 0);
++  const instagram = weekly.channels.find((item) => item.id === "instagram");
++  assert.equal(instagram.metrics.views.current, 140);
++  assert.equal(instagram.metrics.views.previous, 70);
++  assert.equal(instagram.metrics.views.change, 100);
++  assert.equal(weekly.channels.find((item) => item.id === "facebook").stateLabel, "연결 안 됨");
++  assert.equal(weekly.channels.find((item) => item.id === "threads").stateLabel, "데이터 모으는 중");
++  assert.equal(weekly.channels.find((item) => item.id === "tiktok").stateLabel, "데이터 모으는 중");
++  assert.equal(weekly.channels.find((item) => item.id === "x").stateLabel, "연결 안 됨");
++  const fromFile = buildWeekly({
++    now,
++    email: "owner@example.test",
++    clientId: "shop",
++    connections: { youtube: { hasToken: true, account: { displayName: "채널" } } },
++    snapshots: {
++      days: {
++        "2026-10-29": { "owner@example.test|shop|youtube": { views: 100, followers: 10, videos: 1 } },
++        "2026-11-05": { "owner@example.test|shop|youtube": { views: 100, followers: 10, videos: 1 } },
++        "2026-11-12": { "owner@example.test|shop|youtube": { views: 150, followers: 10, videos: 2 } },
++      },
++    },
++  });
++  const stored = fromFile.channels.find((item) => item.id === "youtube");
++  assert.equal(stored.metrics.views.current, 50);
++  assert.equal(stored.metrics.views.previous, 0);
++  assert.equal(stored.metrics.views.change, null);
++  assert.equal(fromFile.channels.find((item) => item.id === "naver-clip").stateLabel, "연결 안 됨");
++  const message = renderEmail({
++    settings: { fromName: "에테르", include: "both", subject: "{고객명}", body: "본문" },
++    report,
++    weekly,
++    clientName: "김밥천국",
++    period: "2026년 11월 12일 주간",
++    viewUrl: "https://1post.kr/r/abc",
++    mock: true,
++  });
++  assert.equal(message.html.includes("<script"), false);
++  assert.equal(message.html.includes("보고서 보기"), true);
++  assert.equal(message.html.includes("예시 데이터"), true);
++  assert.equal(message.html.includes("+50%"), true);
++  assert.equal(message.html.includes("데이터 모으는 중"), true);
++  const page = renderViewPage({
++    settings: { fromName: "에테르", include: "both", body: "본문" },
++    report,
++    weekly,
++    clientName: "김밥천국",
++    period: "2026년 11월 12일 주간",
++  });
++  assert.equal(page.html.includes("PDF로 저장"), true);
++  assert.equal(page.html.includes("@media print"), true);
++});
++
++test("manual sends stop after the daily limit and strangers cannot edit", async () => {
++  const { mail } = harness(new Date("2026-11-12T03:00:00.000Z"));
++  mail.saveSettings("shop", { fromEmail: "ether@1post.kr", to: ["client@example.test"], subject: "안녕", body: "본문" });
++  for (let i = 0; i < 5; i += 1) {
++    const result = await mail.sendNow("shop", { report, clientName: "가게", kind: "now" });
++    assert.equal(result.entry.ok, true);
++  }
++  await assert.rejects(() => mail.sendNow("shop", { report, clientName: "가게" }), /오늘은 이 가게에서 더 보낼 수 없습니다/);
++
++  const app = express();
++  app.use(express.json());
++  const mounted = mountReportMail(app, {
++    env: {},
++    scheduler: false,
++  });
++  assert.equal(mounted.enabled, false);
++  assert.equal(mailEnabled({}), false);
++  const server = await new Promise((resolve) => {
++    const listening = app.listen(0, "127.0.0.1", () => resolve(listening));
++  });
++  const port = server.address().port;
++  const off = await fetch("http://127.0.0.1:" + port + "/api/report-mail/status");
++  assert.equal(off.status, 404);
++  await new Promise((resolve) => server.close(resolve));
++
++  const open = express();
++  open.use(express.json());
++  mountReportMail(open, {
++    env: { REPORT_MAIL_ENABLED: "1" },
++    scheduler: false,
++    mail,
++    getSession: (req) => ({ email: req.headers["x-email"] || "" }),
++    ownsClient: (email, clientId) => email === "owner@example.test" && clientId === "shop",
++    isAdmin: () => false,
++  });
++  const live = await new Promise((resolve) => {
++    const listening = open.listen(0, "127.0.0.1", () => resolve(listening));
++  });
++  const denied = await fetch("http://127.0.0.1:" + live.address().port + "/api/report-mail/shop", { headers: { "x-email": "stranger@example.test" } });
++  assert.equal(denied.status, 403);
++  await new Promise((resolve) => live.close(resolve));
++});
+diff -u -r -N a/server.js b/server.js
+--- a/server.js
++++ b/server.js
+@@ -26,5 +26,6 @@
+ const { createMcpStore } = require("./lib/mcp-store");
+ const { mountYtResearch } = require("./lib/yt-research");
++const { mountReportMail, buildWeekly } = require("./lib/report-mail");
+ 
+ const PORT = Number(process.env.PORT || 3000);
+ const HOST = process.env.HOST || "0.0.0.0";
+@@ -4488,7 +4489,71 @@
+ mountYtResearch(app, {
+   getSession,
+ });
+ 
++mountReportMail(app, {
++  getSession,
++  env: process.env,
++  isAdmin: (email) => {
++    try { return typeof isAdminEmail === "function" && isAdminEmail(email); }
++    catch (err) { return false; }
++  },
++  ownsClient: (email, clientId) => {
++    try {
++      if (typeof isAdminEmail === "function" && isAdminEmail(email)) return true;
++      const client = clientStore.getClient(email, clientId);
++      return !!(client && client.id === clientId);
++    } catch (err) { return false; }
++  },
++  clientName: (email, clientId) => {
++    try {
++      const client = clientStore.getClient(email, clientId);
++      return (client && (client.name || client.title)) || "";
++    } catch (err) { return ""; }
++  },
++  loadReport: async (email, clientId) => {
++    try {
++      if (!email || !clientStore || typeof clientStore.getClient !== "function") return null;
++      if (typeof channelAnalysis === "undefined" || !channelAnalysis.buildForStore) return null;
++      const client = clientStore.getClient(email, clientId);
++      if (!client) return null;
++      const analysis = channelAnalysis.buildForStore({
++        email,
++        client,
++        metaEnabled: typeof insights !== "undefined" && insights && typeof insights.metaEnabled === "function" ? insights.metaEnabled() : false,
++      });
++      const reportLib = require("./public/yt-report");
++      return reportLib.buildReport({
++        now: new Date(),
++        analysisChannels: analysis.channels || [],
++        brandName: analysis.storeName || client.name || "",
++        mock: false,
++      });
++    } catch (err) {
++      return null;
++    }
++  },
++  loadWeekly: async (email, clientId) => {
++    let snapshots = { days: {} };
++    let connections = null;
++    try {
++      if (typeof channelAnalysis !== "undefined" && channelAnalysis && typeof channelAnalysis.readSnapshotFile === "function") {
++        snapshots = channelAnalysis.readSnapshotFile();
++      }
++    } catch (err) {
++      snapshots = { days: {} };
++    }
++    try {
++      if (email && clientId && typeof channelAnalysis !== "undefined" && channelAnalysis && typeof channelAnalysis.readConnections === "function") {
++        connections = channelAnalysis.readConnections(email, clientId);
++      }
++    } catch (err) {
++      connections = null;
++    }
++    return buildWeekly({ now: new Date(), email: email, clientId: clientId, snapshots: snapshots, connections: connections });
++  },
++  publicBase: process.env.PUBLIC_BASE_URL || "",
++});
++
+ app.get("*", (req, res, next) => {
+   if (req.path.startsWith("/api/")) return next();
+   res.sendFile(path.join(__dirname, "public", "index.html"));
