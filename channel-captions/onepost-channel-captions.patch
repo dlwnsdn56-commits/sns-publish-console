@@ -735,19 +735,14 @@ diff -u -r -N a/server.js b/server.js
  const { mountOnepostMcp } = require("./lib/mcp");
  const { buildChannelStatus } = require("./lib/mcp-channels");
  const { createMcpStore } = require("./lib/mcp-store");
-@@ -4204,7 +4204,7 @@
-     if (!outcome.ok) return res.status(outcome.status).json(outcome.body);
+@@ -4221,5 +4221,5 @@
      if (!outcome.scheduled) {
        for (const task of outcome.tasks.filter((item) => item.kind === "api")) {
 -        runPublishTask(task, outcome.job, req.user && req.user.email);
 +        runPublishTask(task, captionJobForChannel(outcome.job, task.channel), req.user && req.user.email);
        }
      }
- 
-@@ -4538,7 +4538,7 @@
- 
- 
- 
+@@ -4519,4 +4519,4 @@
 -  runPublish: (task, job, email) => runPublishTask(task, job, email),
 +  runPublish: (task, job, email) => runPublishTask(task, captionJobForChannel(job, task.channel), email),
    findJob: (id) => store.getJob(id),
