@@ -1,8 +1,9 @@
 diff -u -r -N a/lib/channel-caption.js b/lib/channel-caption.js
 --- a/lib/channel-caption.js	1970-01-01 00:00:00.000000000 +0000
-+++ b/lib/channel-caption.js	2026-11-12 14:11:51.573101049 +0000
-@@ -0,0 +1,133 @@
++++ b/lib/channel-caption.js	2026-11-12 14:20:02.323924987 +0000
+@@ -0,0 +1,141 @@
 +const X_LIMIT = 280;
++const CLIP_LIMIT = 300;
 +const THREADS_LIMIT = 500;
 +const URL_WEIGHT = 23;
 +const URL_RE = /https?:\/\/\S+/gi;
@@ -94,7 +95,7 @@ diff -u -r -N a/lib/channel-caption.js b/lib/channel-caption.js
 +  const base = String(source.caption || "");
 +  const key = channelId(id);
 +  const merged = mergeCaptionFields(source);
-+  if (key === "x") return merged.captionX || base;
++  if (key === "x" || key === "naver-clip") return merged.captionX || base;
 +  if (key === "threads") return merged.captionThreads || base;
 +  return base;
 +}
@@ -111,6 +112,12 @@ diff -u -r -N a/lib/channel-caption.js b/lib/channel-caption.js
 +  const warnings = [];
 +  const xText = xOwn || base;
 +  const threadsText = threadsOwn || base;
++  const clipLen = threadsLength(xText);
++  if (clipLen > CLIP_LIMIT) {
++    warnings.push(xOwn
++      ? "트위터·클립 설명글이 클립 300자를 넘었습니다. (" + clipLen + "/300)"
++      : "기본 설명글이 클립 한도보다 깁니다. 트위터·클립 칸을 따로 적어 주세요. (" + clipLen + "/300)");
++  }
 +  if (xWeight(xText) > X_LIMIT) {
 +    warnings.push(xOwn
 +      ? "트위터 설명글이 280을 넘었습니다. (" + xWeight(xText) + "/280)"
@@ -126,6 +133,7 @@ diff -u -r -N a/lib/channel-caption.js b/lib/channel-caption.js
 +
 +module.exports = {
 +  X_LIMIT,
++  CLIP_LIMIT,
 +  THREADS_LIMIT,
 +  URL_WEIGHT,
 +  xWeight,
@@ -135,9 +143,74 @@ diff -u -r -N a/lib/channel-caption.js b/lib/channel-caption.js
 +  captionJobForChannel,
 +  captionWarnings,
 +};
+diff -u -r -N a/lib/mcp.js b/lib/mcp.js
+--- a/lib/mcp.js	2026-11-12 14:20:02.323924987 +0000
++++ b/lib/mcp.js	2026-11-12 14:20:02.323924987 +0000
+@@ -180,6 +180,8 @@
+       status: draft.status,
+       title: draft.title,
+       caption: draft.caption,
++      caption_x: draft.captionX || "",
++      caption_threads: draft.captionThreads || "",
+       mediaType: draft.mediaType,
+       channels: draft.channels,
+       uploadIds: draft.uploadIds,
+@@ -252,6 +254,12 @@
+     draft.mediaType = String(args.mediaType || draft.mediaType || "");
+     draft.title = String(args.title != null ? args.title : draft.title || "").slice(0, 100);
+     draft.caption = String(args.caption != null ? args.caption : draft.caption || "").slice(0, 8000);
++    if (args.caption_x != null || args.captionX != null) {
++      draft.captionX = String(args.caption_x != null ? args.caption_x : args.captionX).slice(0, 8000);
++    }
++    if (args.caption_threads != null || args.captionThreads != null) {
++      draft.captionThreads = String(args.caption_threads != null ? args.caption_threads : args.captionThreads).slice(0, 8000);
++    }
+     draft.channels = channels;
+     draft.uploadIds = files.map((file) => file.uploadId);
+     draft.fileNames = files.map((file) => file.originalName);
+@@ -259,7 +267,10 @@
+     draft.privatePost = args.privatePost != null ? !!args.privatePost : !!draft.privatePost;
+     draft.aiGenerated = args.aiGenerated != null ? !!args.aiGenerated : !!draft.aiGenerated;
+     draft.aiGeneratedByChannel = args.aiGeneratedByChannel || draft.aiGeneratedByChannel || null;
+-    draft.captionsByChannel = args.captionsByChannel || draft.captionsByChannel || null;
++    const capMap = Object.assign({}, draft.captionsByChannel || {}, args.captionsByChannel || {});
++    if (draft.captionX != null) capMap.x = draft.captionX;
++    if (draft.captionThreads != null) capMap.threads = draft.captionThreads;
++    draft.captionsByChannel = capMap;
+     draft.youtubeMadeForKids = args.youtubeMadeForKids != null ? !!args.youtubeMadeForKids : !!draft.youtubeMadeForKids;
+     draft.youtubePaidPromotion = args.youtubePaidPromotion != null ? !!args.youtubePaidPromotion : !!draft.youtubePaidPromotion;
+     draft.tiktokOptions = args.tiktokOptions || draft.tiktokOptions || null;
+@@ -358,6 +369,8 @@
+           channels: { type: "array", items: { type: "string" } },
+           title: { type: "string" },
+           caption: { type: "string" },
++          caption_x: { type: "string" },
++          caption_threads: { type: "string" },
+           idempotencyKey: { type: "string" },
+         },
+         required: ["clientId", "mediaType", "uploadIds", "channels"],
+@@ -410,6 +423,9 @@
+         properties: {
+           draftId: { type: "string" },
+           expectedVersion: { type: "integer" },
++          caption: { type: "string" },
++          caption_x: { type: "string" },
++          caption_threads: { type: "string" },
+         },
+         required: ["draftId", "expectedVersion"],
+       },
+@@ -857,6 +873,8 @@
+     clientId: draft.clientId,
+     mediaType: draft.mediaType,
+     caption: draft.caption,
++    caption_x: draft.captionX || "",
++    caption_threads: draft.captionThreads || "",
+     title: draft.title,
+     scheduledAt: draft.scheduledAt,
+     privatePost: draft.privatePost ? "1" : "",
 diff -u -r -N a/lib/publish-job.js b/lib/publish-job.js
---- a/lib/publish-job.js	2026-11-12 14:11:51.573101049 +0000
-+++ b/lib/publish-job.js	2026-11-12 14:11:51.573101049 +0000
+--- a/lib/publish-job.js	2026-11-12 14:20:02.323924987 +0000
++++ b/lib/publish-job.js	2026-11-12 14:20:02.323924987 +0000
 @@ -1,4 +1,5 @@
  const crypto = require("crypto");
 +const { captionForChannel, mergeCaptionFields } = require("./channel-caption");
@@ -182,8 +255,8 @@ diff -u -r -N a/lib/publish-job.js b/lib/publish-job.js
      completedAt: null,
      result: null,
 diff -u -r -N a/public/app.js b/public/app.js
---- a/public/app.js	2026-11-12 14:11:51.573101049 +0000
-+++ b/public/app.js	2026-11-12 14:11:51.573101049 +0000
+--- a/public/app.js	2026-11-12 14:20:02.323924987 +0000
++++ b/public/app.js	2026-11-12 14:20:02.323924987 +0000
 @@ -2357,26 +2357,48 @@
      if (el) el.value = text == null ? "" : String(text);
    }
@@ -238,16 +311,17 @@ diff -u -r -N a/public/app.js b/public/app.js
 -    const full = (sharedDraft && sharedDraft.caption != null)
 -      ? sharedDraft.caption
 -      : (composeTa ? composeTa.value : "");
-+    const full = defaultCaptionText();
-     if (sns && (sns.id === "threads" || sns.id === "x")) {
+-    if (sns && (sns.id === "threads" || sns.id === "x")) {
 -      const stored = getChannelCaption(sns.id);
 -      if (stored || captionOverrideDirty[sns.id]) return stored;
 -      return shortenCaption(full, channelCaptionMax(sns.id));
-+      return ownChannelCaption(sns.id) || full;
++    const full = defaultCaptionText();
++    if (sns && (sns.id === "threads" || sns.id === "x" || sns.id === "naver-clip")) {
++      return ownChannelCaption(sns.id === "naver-clip" ? "x" : sns.id) || full;
      }
      return full;
    }
-@@ -2399,42 +2421,69 @@
+@@ -2399,42 +2421,101 @@
      captionOverrideDirty.x = false;
    }
  
@@ -307,19 +381,50 @@ diff -u -r -N a/public/app.js b/public/app.js
 -    if (xEl) {
 -      xEl.textContent = "트위터 " + xn + "/" + X_TWEET_MAX;
 -      xEl.classList.toggle("char-over", xn > X_TWEET_MAX);
--    }
 +    const xOwn = ownChannelCaption("x");
 +    const threadsOwn = ownChannelCaption("threads");
-+    setLimitWarn(
-+      document.getElementById("caption-x-count"),
-+      document.getElementById("caption-x-warn"),
-+      "트위터",
-+      xWeight(xOwn || full),
-+      X_TWEET_MAX,
-+      !!xOwn,
-+      "기본 설명글이 트위터 한도보다 깁니다. 트위터 칸을 따로 적어 주세요. (" + xWeight(full) + "/280)",
-+      "트위터 설명글이 280을 넘었습니다. (" + xWeight(xOwn) + "/280)"
-+    );
++    const selected = new Set(typeof selectedComposeChannels === "function" ? selectedComposeChannels() : []);
++    const xOn = selected.has("x") || selected.has("twitter");
++    const clipOn = selected.has("naver-clip");
++    const shared = xOwn || full;
++    const xCount = document.getElementById("caption-x-xcount");
++    const clipCount = document.getElementById("caption-x-clipcount");
++    const xUsed = xWeight(shared);
++    const clipUsed = charLen(shared);
++    if (xCount) {
++      xCount.hidden = !xOn;
++      xCount.textContent = "트위터 " + xUsed + "/280";
++      xCount.classList.toggle("char-over", xOn && xUsed > X_TWEET_MAX);
++    }
++    if (clipCount) {
++      clipCount.hidden = !clipOn;
++      clipCount.textContent = "클립 " + clipUsed + "/300";
++      clipCount.classList.toggle("char-over", clipOn && clipUsed > 300);
++    }
++    const xWarn = document.getElementById("caption-x-warn");
++    if (xWarn) {
++      if (xOn && xUsed > X_TWEET_MAX) {
++        xWarn.hidden = false;
++        xWarn.textContent = xOwn
++          ? "트위터 설명글이 280을 넘었습니다. (" + xUsed + "/280)"
++          : "기본 설명글이 트위터 한도보다 깁니다. 트위터·클립 칸을 따로 적어 주세요. (" + xUsed + "/280)";
++      } else {
++        xWarn.hidden = true;
++        xWarn.textContent = "";
++      }
+     }
++    const clipWarn = document.getElementById("caption-clip-warn");
++    if (clipWarn) {
++      if (clipOn && clipUsed > 300) {
++        clipWarn.hidden = false;
++        clipWarn.textContent = xOwn
++          ? "트위터·클립 설명글이 클립 300자를 넘었습니다. (" + clipUsed + "/300)"
++          : "기본 설명글이 클립 한도보다 깁니다. 트위터·클립 칸을 따로 적어 주세요. (" + clipUsed + "/300)";
++      } else {
++        clipWarn.hidden = true;
++        clipWarn.textContent = "";
++      }
++    }
 +    setLimitWarn(
 +      document.getElementById("caption-threads-count"),
 +      document.getElementById("caption-threads-warn"),
@@ -336,15 +441,20 @@ diff -u -r -N a/public/app.js b/public/app.js
 +    const selected = new Set(selectedComposeChannels());
 +    const xBox = document.getElementById("caption-x-box");
 +    const threadsBox = document.getElementById("caption-threads-box");
-+    if (xBox) xBox.hidden = !(selected.has("x") || selected.has("twitter"));
++    if (xBox) xBox.hidden = !(selected.has("x") || selected.has("twitter") || selected.has("naver-clip"));
 +    if (threadsBox) threadsBox.hidden = !selected.has("threads");
 +    updateComposeCharCount();
    }
  
    function updateCaptionCharCount() {
-@@ -2500,13 +2549,11 @@
-     } else if (sns.id === "threads" || sns.id === "x") {
-       const stored = getChannelCaption(sns.id);
+@@ -2497,16 +2578,14 @@
+     let caption = "";
+     if (snsForPath(pathOf()) && captionEl && String(captionEl.value || "").trim()) {
+       caption = captionEl.value;
+-    } else if (sns.id === "threads" || sns.id === "x") {
+-      const stored = getChannelCaption(sns.id);
++    } else if (sns.id === "threads" || sns.id === "x" || sns.id === "naver-clip") {
++      const stored = getChannelCaption(sns.id === "naver-clip" ? "x" : sns.id);
        const full = composeTa ? composeTa.value : "";
 -      caption = stored || shortenCaption(full, channelCaptionMax(sns.id));
 +      caption = String(stored || "").trim() ? stored : (composeTa ? composeTa.value : "");
@@ -357,7 +467,21 @@ diff -u -r -N a/public/app.js b/public/app.js
      if (!files.length && !hasCaption) {
        body.appendChild(el("p", "sns-preview-empty", PREVIEW_EMPTY));
        renderHomeTiles();
-@@ -2680,12 +2727,32 @@
+@@ -2668,9 +2747,10 @@
+   document.getElementById("caption").addEventListener("input", () => {
+     if (!fillingTabCaption) {
+       const sns = activePreviewSns();
+-      if (sns && (sns.id === "threads" || sns.id === "x")) {
+-        captionOverrideDirty[sns.id] = true;
+-        setChannelCaption(sns.id, document.getElementById("caption").value);
++      if (sns && (sns.id === "threads" || sns.id === "x" || sns.id === "naver-clip")) {
++        const key = sns.id === "naver-clip" ? "x" : sns.id;
++        captionOverrideDirty[key] = true;
++        setChannelCaption(key, document.getElementById("caption").value);
+         updateComposeCharCount();
+       }
+     }
+@@ -2680,12 +2760,32 @@
    const composeCaptionEl = document.getElementById("compose-caption");
    if (composeCaptionEl) {
      composeCaptionEl.addEventListener("input", () => {
@@ -391,7 +515,7 @@ diff -u -r -N a/public/app.js b/public/app.js
    const composeTitleEl = document.getElementById("compose-title");
    const pubTitleEl = document.getElementById("pub-title");
    if (composeTitleEl) composeTitleEl.addEventListener("input", renderSnsPreview);
-@@ -3657,7 +3724,10 @@
+@@ -3657,7 +3757,10 @@
      fd.append("title", String(title || "").trim().slice(0, 100));
      fd.append("scheduledAt", scheduledAt || "");
      fd.append("channels", JSON.stringify(channels));
@@ -403,7 +527,16 @@ diff -u -r -N a/public/app.js b/public/app.js
      if (privatePost) fd.append("privatePost", "1");
      const aiMap = getChannelAiMap(channels);
      const allAi = channels.length > 0 && channels.every((ch) => aiMap[ch]);
-@@ -3789,7 +3859,7 @@
+@@ -3703,7 +3806,7 @@
+                   desktopAuthToken: authData.desktopAuthToken,
+                   encryptedRecipe: authData.encryptedRecipe,
+                   title: String(title || "").trim().slice(0, 100),
+-                  caption,
++                  caption: (clipTask && clipTask.caption) || ownChannelCaption("x") || caption,
+                   fileName: firstFile ? firstFile.name : "",
+                   // 1.1+ 앱은 File을 받아 PC 경로로 바로 올림(대용량 OK). 1.0 앱만 버퍼 전달.
+                   file: legacyApp ? undefined : firstFile,
+@@ -3789,7 +3892,7 @@
        ta.value = caption;
        ta.dispatchEvent(new Event("input", { bubbles: true }));
      } else {
@@ -412,7 +545,7 @@ diff -u -r -N a/public/app.js b/public/app.js
        updateComposeCharCount();
        if (sharedDraft) sharedDraft.caption = caption;
        refreshActiveTabCaption();
-@@ -3932,7 +4002,7 @@
+@@ -3932,7 +4035,7 @@
          if (pubTitle) pubTitle.value = sliced;
          if (sharedDraft) sharedDraft.title = sliced;
        }
@@ -421,7 +554,7 @@ diff -u -r -N a/public/app.js b/public/app.js
        updateComposeCharCount();
        resetCaptionChat();
        if (sharedDraft) sharedDraft.caption = caption;
-@@ -3991,16 +4061,20 @@
+@@ -3991,16 +4094,20 @@
        return;
      }
  
@@ -443,7 +576,7 @@ diff -u -r -N a/public/app.js b/public/app.js
      fillPublishFromDraft();
      setAppliedMarks(true);
      msg.className = "msg ok";
-@@ -4047,6 +4121,7 @@
+@@ -4047,6 +4154,7 @@
          `<span class="hint ch-hint">${esc(hint)}</span>`;
        list.appendChild(lab);
      });
@@ -451,7 +584,7 @@ diff -u -r -N a/public/app.js b/public/app.js
    }
  
    renderComposeChannelPicks();
-@@ -4060,6 +4135,7 @@
+@@ -4060,6 +4168,7 @@
        el.checked = true;
      });
      syncTiktokDirectPostUI();
@@ -459,7 +592,7 @@ diff -u -r -N a/public/app.js b/public/app.js
    });
  
    document.getElementById("compose-publish-all-btn").addEventListener("click", async () => {
-@@ -4105,16 +4181,20 @@
+@@ -4105,16 +4214,20 @@
        return;
      }
  
@@ -482,16 +615,16 @@ diff -u -r -N a/public/app.js b/public/app.js
      setAppliedMarks(true);
  
 diff -u -r -N a/public/index.html b/public/index.html
---- a/public/index.html	2026-11-12 14:11:51.573101049 +0000
-+++ b/public/index.html	2026-11-12 14:11:51.573101049 +0000
-@@ -391,21 +391,33 @@
+--- a/public/index.html	2026-11-12 14:20:02.323924987 +0000
++++ b/public/index.html	2026-11-12 14:20:02.323924987 +0000
+@@ -391,21 +391,34 @@
                <div class="field box">
                  <div class="caption-field-head">
                    <div class="caption-field-copy">
 -                    <span class="lbl">설명글</span>
 -                    <p class="hint caption-style-hint">이 클라이언트의 이전 글 말투와 태그를 참고합니다.</p>
 +                    <span class="lbl">기본 설명글</span>
-+                    <p class="hint caption-style-hint">인스타, 유튜브, 틱톡, 페이스북, 네이버 클립 등 나머지 채널에 씁니다.</p>
++                    <p class="hint caption-style-hint">인스타, 유튜브, 틱톡, 페이스북 등 나머지 채널에 씁니다.</p>
                    </div>
                    <button type="button" id="compose-caption-btn" class="secondary">설명글 만들기</button>
                  </div>
@@ -507,12 +640,13 @@ diff -u -r -N a/public/index.html b/public/index.html
 -                <textarea id="ch-caption-x" class="channel-caption-store" hidden aria-hidden="true"></textarea>
 +                <div id="caption-x-box" class="channel-caption-box" hidden>
 +                  <div class="caption-field-head">
-+                    <span class="lbl">트위터(X) 설명글</span>
++                    <span class="lbl">트위터(X)·클립 설명글</span>
 +                    <button type="button" id="caption-x-copy" class="secondary">기본 글 복사</button>
 +                  </div>
 +                  <textarea id="ch-caption-x" placeholder="비워두면 기본 설명글을 써요"></textarea>
-+                  <p class="char-count" id="caption-x-count" aria-live="polite">트위터 0/280</p>
++                  <p class="char-count" id="caption-x-count" aria-live="polite"><span id="caption-x-xcount">트위터 0/280</span><span id="caption-x-clipcount">클립 0/300</span></p>
 +                  <p class="hint char-warn" id="caption-x-warn" hidden></p>
++                  <p class="hint char-warn" id="caption-clip-warn" hidden></p>
 +                </div>
 +                <div id="caption-threads-box" class="channel-caption-box" hidden>
 +                  <div class="caption-field-head">
@@ -527,25 +661,56 @@ diff -u -r -N a/public/index.html b/public/index.html
                    <div id="caption-chat-log" class="caption-chat-log" aria-live="polite"></div>
                    <div class="caption-chat-row">
 diff -u -r -N a/public/styles.css b/public/styles.css
---- a/public/styles.css	2026-11-12 14:11:51.573101049 +0000
-+++ b/public/styles.css	2026-11-12 14:11:51.573101049 +0000
-@@ -1540,7 +1540,11 @@
+--- a/public/styles.css	2026-11-12 14:20:02.323924987 +0000
++++ b/public/styles.css	2026-11-12 14:20:02.323924987 +0000
+@@ -1540,7 +1540,13 @@
    background: var(--blue); color: #fff; border-radius: 10px; text-decoration: none; font-weight: 600;
  }
  .upload-links { border-radius: 12px; }
 -.channel-caption-store { display: none !important; }
 +.channel-caption-box { margin-top: 12px; }
 +.channel-caption-box[hidden] { display: none !important; }
++#caption-x-xcount[hidden], #caption-x-clipcount[hidden] { display: none !important; }
++#caption-x-count span:not([hidden]) + span:not([hidden])::before { content: " · "; }
 +.channel-caption-box textarea { width: 100%; min-height: 72px; }
 +.char-warn { color: #b42318; font-weight: 700; margin: 4px 0 0; }
 +.caption-x-line, .caption-threads-line { color: var(--muted); }
  
  
  /* unstyled native buttons in the real forms */
+diff -u -r -N a/server.js b/server.js
+--- a/server.js	2026-11-12 14:20:02.323924987 +0000
++++ b/server.js	2026-11-12 14:20:02.323924987 +0000
+@@ -23,6 +23,7 @@
+ const leads = require("./lib/leads");
+ const staff = require("./lib/staff");
+ const { createPublishJob } = require("./lib/publish-job");
++const { captionJobForChannel } = require("./lib/channel-caption");
+ const { mountOnepostMcp } = require("./lib/mcp");
+ const { buildChannelStatus } = require("./lib/mcp-channels");
+ const { createMcpStore } = require("./lib/mcp-store");
+@@ -4204,7 +4204,7 @@
+     if (!outcome.ok) return res.status(outcome.status).json(outcome.body);
+     if (!outcome.scheduled) {
+       for (const task of outcome.tasks.filter((item) => item.kind === "api")) {
+-        runPublishTask(task, outcome.job, req.user && req.user.email);
++        runPublishTask(task, captionJobForChannel(outcome.job, task.channel), req.user && req.user.email);
+       }
+     }
+ 
+@@ -4538,7 +4538,7 @@
+ 
+ 
+ 
+-  runPublish: (task, job, email) => runPublishTask(task, job, email),
++  runPublish: (task, job, email) => runPublishTask(task, captionJobForChannel(job, task.channel), email),
+   findJob: (id) => store.getJob(id),
+   findJobByDraftId: (draftId) => store.getJobs().find((job) => job.mcpDraftId === draftId) || null,
+ });
 diff -u -r -N a/test/channel-caption.test.js b/test/channel-caption.test.js
 --- a/test/channel-caption.test.js	1970-01-01 00:00:00.000000000 +0000
-+++ b/test/channel-caption.test.js	2026-11-12 14:11:51.573101049 +0000
-@@ -0,0 +1,65 @@
++++ b/test/channel-caption.test.js	2026-11-12 14:20:02.323924987 +0000
+@@ -0,0 +1,72 @@
 +const test = require("node:test");
 +const assert = require("node:assert/strict");
 +const { xWeight, threadsLength, captionForChannel, mergeCaptionFields, captionWarnings } = require("../lib/channel-caption");
@@ -569,6 +734,11 @@ diff -u -r -N a/test/channel-caption.test.js b/test/channel-caption.test.js
 +  assert.equal(captionForChannel(job, "threads"), "스레드만");
 +  assert.equal(captionForChannel({ caption: "기본", caption_x: "엑스" }, "youtube"), "기본");
 +  assert.equal(captionForChannel({ caption: "기본", caption_x: "엑스" }, "x"), "엑스");
++  assert.equal(captionForChannel({ caption: "기본", caption_x: "클립글" }, "naver-clip"), "클립글");
++  assert.equal(captionForChannel({ caption: "기본", caption_x: "" }, "naver-clip"), "기본");
++  const clipWarn = captionWarnings({ caption: "가".repeat(301) });
++  assert.equal(clipWarn.some((line) => line.includes("클립 한도")), true);
++  assert.equal(captionWarnings({ caption: "가".repeat(301), captionX: "짧은클립" }).some((line) => line.includes("클립 300자")), false);
 +  const warns = captionWarnings({ caption: "가".repeat(200) });
 +  assert.equal(warns.some((line) => line.includes("트위터 칸을 따로")), true);
 +  assert.equal(captionWarnings({ caption: "짧은 글" }).length, 0);
@@ -581,12 +751,13 @@ diff -u -r -N a/test/channel-caption.test.js b/test/channel-caption.test.js
 +    body: {
 +      clientId: "shop",
 +      mediaType: "video",
-+      channels: ["youtube", "x", "threads"],
++      channels: ["youtube", "x", "threads", "naver-clip"],
 +      caption: "기본 설명",
 +      caption_x: "",
 +      caption_threads: "스레드 글",
 +    },
 +    files: [{ originalName: "a.mp4", storedName: "a.mp4", mimeType: "video/mp4", size: 10 }],
++    desktop: true,
 +    dryRun: true,
 +  }, {
 +    getClient: () => ({ id: "shop", name: "가게" }),
@@ -608,71 +779,7 @@ diff -u -r -N a/test/channel-caption.test.js b/test/channel-caption.test.js
 +  assert.equal(byChannel.youtube, "기본 설명");
 +  assert.equal(byChannel.x, "기본 설명");
 +  assert.equal(byChannel.threads, "스레드 글");
++  assert.equal(byChannel["naver-clip"], "기본 설명");
 +  assert.equal(mergeCaptionFields({ caption_x: "유지" }).captionX, "유지");
 +  assert.equal(saved.length, 0);
 +});
-diff -u -r -N a/server.js b/server.js
---- a/server.js
-+++ b/server.js
-@@ -1,2 +1,3 @@
- const { createPublishJob } = require("./lib/publish-job");
-+const { captionJobForChannel } = require("./lib/channel-caption");
- const { mountOnepostMcp } = require("./lib/mcp");
-@@ -1,5 +1,5 @@
-     if (!outcome.scheduled) {
-       for (const task of outcome.tasks.filter((item) => item.kind === "api")) {
--        runPublishTask(task, outcome.job, req.user && req.user.email);
-+        runPublishTask(task, captionJobForChannel(outcome.job, task.channel), req.user && req.user.email);
-       }
-     }
-@@ -1,4 +1,4 @@
-       store,
-     }),
--  runPublish: (task, job, email) => runPublishTask(task, job, email),
-+  runPublish: (task, job, email) => runPublishTask(task, captionJobForChannel(job, task.channel), email),
-   findJob: (id) => store.getJob(id),
-diff -u -r -N a/lib/mcp.js b/lib/mcp.js
---- a/lib/mcp.js
-+++ b/lib/mcp.js
-@@ -1,2 +1,8 @@
-     draft.caption = String(args.caption != null ? args.caption : draft.caption || "").slice(0, 8000);
-+    if (args.caption_x != null || args.captionX != null) {
-+      draft.captionX = String(args.caption_x != null ? args.caption_x : args.captionX).slice(0, 8000);
-+    }
-+    if (args.caption_threads != null || args.captionThreads != null) {
-+      draft.captionThreads = String(args.caption_threads != null ? args.caption_threads : args.captionThreads).slice(0, 8000);
-+    }
-     draft.channels = channels;
-@@ -1,3 +1,6 @@
-     draft.aiGeneratedByChannel = args.aiGeneratedByChannel || draft.aiGeneratedByChannel || null;
--    draft.captionsByChannel = args.captionsByChannel || draft.captionsByChannel || null;
-+    const capMap = Object.assign({}, draft.captionsByChannel || {}, args.captionsByChannel || {});
-+    if (draft.captionX != null) capMap.x = draft.captionX;
-+    if (draft.captionThreads != null) capMap.threads = draft.captionThreads;
-+    draft.captionsByChannel = capMap;
-     draft.youtubeMadeForKids = args.youtubeMadeForKids != null ? !!args.youtubeMadeForKids : !!draft.youtubeMadeForKids;
-@@ -1,3 +1,5 @@
-           title: { type: "string" },
-           caption: { type: "string" },
-+          caption_x: { type: "string" },
-+          caption_threads: { type: "string" },
-           idempotencyKey: { type: "string" },
-@@ -1,3 +1,6 @@
-           draftId: { type: "string" },
-           expectedVersion: { type: "integer" },
-+          caption: { type: "string" },
-+          caption_x: { type: "string" },
-+          caption_threads: { type: "string" },
-         },
-@@ -1,3 +1,5 @@
-       title: draft.title,
-       caption: draft.caption,
-+      caption_x: draft.captionX || "",
-+      caption_threads: draft.captionThreads || "",
-       mediaType: draft.mediaType,
-@@ -1,3 +1,5 @@
-     mediaType: draft.mediaType,
-     caption: draft.caption,
-+    caption_x: draft.captionX || "",
-+    caption_threads: draft.captionThreads || "",
-     title: draft.title,
