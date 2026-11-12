@@ -21,8 +21,8 @@
    res.sendFile(path.join(__dirname, "public", "index.html"));
 diff -u -r -N a/lib/yt-research.js b/lib/yt-research.js
 --- a/lib/yt-research.js	1970-01-01 00:00:00.000000000 +0000
-+++ b/lib/yt-research.js	2026-11-12 07:22:53.362397798 +0000
-@@ -0,0 +1,519 @@
++++ b/lib/yt-research.js	2026-11-12 07:31:45.243470460 +0000
+@@ -0,0 +1,527 @@
 +const fs = require("fs");
 +const path = require("path");
 +
@@ -247,7 +247,15 @@ diff -u -r -N a/lib/yt-research.js b/lib/yt-research.js
 +    return body;
 +  }
 +
-+  function videoKind(durationSec) {
++  function thumbUrl(id, thumbs) {
++  const pic = thumbs || {};
++  const fromApi = (pic.medium && pic.medium.url) || (pic.high && pic.high.url) || (pic.default && pic.default.url) || "";
++  if (fromApi) return fromApi;
++  if (id) return "https://i.ytimg.com/vi/" + id + "/mqdefault.jpg";
++  return "";
++}
++
++function videoKind(durationSec) {
 +    if (durationSec == null) return "unknown";
 +    return durationSec <= 60 ? "shorts" : "long";
 +  }
@@ -332,7 +340,7 @@ diff -u -r -N a/lib/yt-research.js b/lib/yt-research.js
 +        subscriberHidden: channel.hidden,
 +        score: performanceScore(views, channel.count, channel.hidden),
 +        durationSec: isoDurationSeconds(item.contentDetails && item.contentDetails.duration),
-+        thumbnail: (item.snippet.thumbnails && item.snippet.thumbnails.medium && item.snippet.thumbnails.medium.url) || "",
++        thumbnail: thumbUrl(item.id, item.snippet && item.snippet.thumbnails),
 +      };
 +    });
 +    cacheSet(key, videos);
@@ -401,7 +409,7 @@ diff -u -r -N a/lib/yt-research.js b/lib/yt-research.js
 +            viewCount: Number.isFinite(views) ? views : null,
 +            durationSec: isoDurationSeconds(item.contentDetails && item.contentDetails.duration),
 +            score: performanceScore(views, subs, hidden),
-+            thumbnail: (item.snippet.thumbnails && item.snippet.thumbnails.medium && item.snippet.thumbnails.medium.url) || "",
++            thumbnail: thumbUrl(item.id, item.snippet && item.snippet.thumbnails),
 +            url: "https://www.youtube.com/watch?v=" + item.id,
 +          };
 +        });
@@ -543,8 +551,8 @@ diff -u -r -N a/lib/yt-research.js b/lib/yt-research.js
 +  mountYtResearch,
 +};
 diff -u -r -N a/public/app.js b/public/app.js
---- a/public/app.js	2026-11-12 07:22:53.358397792 +0000
-+++ b/public/app.js	2026-11-12 07:22:53.362397798 +0000
+--- a/public/app.js	2026-11-12 07:31:45.243470460 +0000
++++ b/public/app.js	2026-11-12 07:31:45.243470460 +0000
 @@ -38,6 +38,8 @@
      "/naver": "view-naver",
      "/insights": "view-insights",
@@ -601,7 +609,7 @@ diff -u -r -N a/public/app.js b/public/app.js
        body.innerHTML = renderChannelAnalysisView(data);
      } catch (err) {
        if (seq !== analysisSeq) return;
-@@ -4582,6 +4596,411 @@
+@@ -4582,6 +4596,419 @@
      }
    }
  
@@ -813,6 +821,14 @@ diff -u -r -N a/public/app.js b/public/app.js
 +    };
 +  }
 +
++  function ytrBarLabel(value) {
++    const n = Number(value);
++    if (!Number.isFinite(n)) return "";
++    if (n >= 10000) return (n / 10000).toFixed(n >= 100000 ? 0 : 1).replace(/\.0$/, "") + "만";
++    if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, "") + "천";
++    return String(n);
++  }
++
 +  function snsNum(value, hidden) {
 +    if (hidden) return "비공개";
 +    if (value == null || !Number.isFinite(Number(value))) return "—";
@@ -836,8 +852,8 @@ diff -u -r -N a/public/app.js b/public/app.js
 +        </div>`
 +      : `<p class="ic-note">연결 안 됨. 위 칸에 직접 입력한 숫자만 들어갑니다.</p>`;
 +    const bars = report.bars.length
-+      ? `<div class="sns-bars">${report.bars.map((item) => `<i title="${esc(item.title)}" style="height:${Math.max(4, Math.round(((item.views || 0) / maxBar) * 54))}px"></i>`).join("")}</div>
-+        <div class="sns-thumbs">${report.bars.map((item) => `<span style="${item.thumbnail ? "background-image:url(" + esc(item.thumbnail) + ")" : ""}"></span>`).join("")}</div>`
++      ? `<div class="sns-bars">${report.bars.map((item) => `<div class="sns-bar" title="${esc(item.title)}"><em>${esc(ytrBarLabel(item.views))}</em><i style="height:${Math.max(4, Math.round(((item.views || 0) / maxBar) * 46))}px"></i></div>`).join("")}</div>
++        <div class="sns-thumbs">${report.bars.map((item) => item.thumbnail ? `<span><img src="${esc(item.thumbnail)}" alt=""></span>` : `<span class="sns-thumb-empty"></span>`).join("")}</div>`
 +      : `<p class="ic-note">최근 영상 목록이 없습니다.</p>`;
 +    sheet.innerHTML = `
 +      <header class="sns-sheet-head">
@@ -1014,8 +1030,8 @@ diff -u -r -N a/public/app.js b/public/app.js
    let trendsData = null;
    let trendsCat = "all";
 diff -u -r -N a/public/index.html b/public/index.html
---- a/public/index.html	2026-11-12 07:22:53.358397792 +0000
-+++ b/public/index.html	2026-11-12 07:22:53.362397798 +0000
+--- a/public/index.html	2026-11-12 07:31:45.243470460 +0000
++++ b/public/index.html	2026-11-12 07:31:45.243470460 +0000
 @@ -125,6 +125,7 @@
          <a href="/scheduled" data-nav="/scheduled">예약</a>
          <a href="/insights" data-nav="/insights">조회수</a>
@@ -1132,9 +1148,9 @@ diff -u -r -N a/public/index.html b/public/index.html
  </body>
  </html>
 diff -u -r -N a/public/styles.css b/public/styles.css
---- a/public/styles.css	2026-11-12 07:22:53.358397792 +0000
-+++ b/public/styles.css	2026-11-12 07:22:53.362397798 +0000
-@@ -2481,3 +2481,71 @@
+--- a/public/styles.css	2026-11-12 07:31:45.243470460 +0000
++++ b/public/styles.css	2026-11-12 07:31:45.243470460 +0000
+@@ -2481,3 +2481,74 @@
  .trends-chip.static { cursor: default; font-size: 12px; padding: 4px 10px; }
  .trends-chip.new { border-color: #E5484D; color: #E5484D; }
  .trend-video .tv-kw { font-size: 11px; color: var(--accent); }
@@ -1187,10 +1203,13 @@ diff -u -r -N a/public/styles.css b/public/styles.css
 +.sns-stat span { display: block; font-size: 11px; color: #667085; }
 +.sns-stat b { font-size: 16px; }
 +.sns-notes { margin: 8px 0 0; padding-left: 16px; font-size: 12px; }
-+.sns-bars { display: flex; align-items: flex-end; gap: 4px; height: 54px; margin-top: 8px; }
-+.sns-bars i { display: block; flex: 1; background: #0b3fa8; border-radius: 3px 3px 0 0; min-height: 2px; }
++.sns-bars { display: flex; align-items: flex-end; gap: 3px; height: 68px; margin-top: 8px; }
++.sns-bar { flex: 1; min-width: 0; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; }
++.sns-bar em { font-style: normal; font-size: 8px; line-height: 1; color: #344054; margin-bottom: 2px; white-space: nowrap; }
++.sns-bar i { display: block; width: 100%; background: #0b3fa8; border-radius: 3px 3px 0 0; min-height: 2px; }
 +.sns-thumbs { display: flex; gap: 4px; margin-top: 6px; }
-+.sns-thumbs span { width: 36px; height: 48px; border-radius: 4px; background: #d9e4f5 center/cover no-repeat; }
++.sns-thumbs span, .sns-thumb-empty { width: 36px; height: 48px; border-radius: 4px; background: #d9e4f5; overflow: hidden; display: block; }
++.sns-thumbs img { width: 100%; height: 100%; object-fit: cover; display: block; }
 +.sns-strengths, .sns-nexts { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
 +.sns-nexts { grid-template-columns: repeat(4, 1fr); }
 +.sns-mini b, .sns-next b { display: block; font-size: 12px; margin-bottom: 4px; }
@@ -1208,7 +1227,7 @@ diff -u -r -N a/public/styles.css b/public/styles.css
 +}
 diff -u -r -N a/public/yt-report.js b/public/yt-report.js
 --- a/public/yt-report.js	1970-01-01 00:00:00.000000000 +0000
-+++ b/public/yt-report.js	2026-11-12 07:22:53.362397798 +0000
++++ b/public/yt-report.js	2026-11-12 07:31:45.243470460 +0000
 @@ -0,0 +1,214 @@
 +(function (root, factory) {
 +  const api = factory();
@@ -1326,7 +1345,7 @@ diff -u -r -N a/public/yt-report.js b/public/yt-report.js
 +    const bars = videos.slice(0, 10).map((item) => ({
 +      title: item.title || "",
 +      views: finite(item.viewCount) ? item.viewCount : null,
-+      thumbnail: item.thumbnail || "",
++      thumbnail: item.thumbnail || (item.videoId ? "https://i.ytimg.com/vi/" + item.videoId + "/mqdefault.jpg" : ""),
 +    }));
 +
 +    const observations = [];
@@ -1426,8 +1445,8 @@ diff -u -r -N a/public/yt-report.js b/public/yt-report.js
 +});
 diff -u -r -N a/test/yt-report.test.js b/test/yt-report.test.js
 --- a/test/yt-report.test.js	1970-01-01 00:00:00.000000000 +0000
-+++ b/test/yt-report.test.js	2026-11-12 07:22:53.362397798 +0000
-@@ -0,0 +1,56 @@
++++ b/test/yt-report.test.js	2026-11-12 07:31:45.247470477 +0000
+@@ -0,0 +1,58 @@
 +const test = require("node:test");
 +const assert = require("node:assert/strict");
 +const { buildReport } = require("../public/yt-report");
@@ -1442,7 +1461,7 @@ diff -u -r -N a/test/yt-report.test.js b/test/yt-report.test.js
 +  views: 120000,
 +  outliers: [{ title: "혼밥 김치찌개", multiple: 12 }],
 +  recentVideos: [
-+    { title: "옛 영상", publishedAt: "2026-08-01T00:00:00.000Z", viewCount: 1000, durationSec: 40 },
++    { videoId: "abc", title: "옛 영상", publishedAt: "2026-08-01T00:00:00.000Z", viewCount: 1000, durationSec: 40 },
 +    { title: "옛 영상 2", publishedAt: "2026-08-20T00:00:00.000Z", viewCount: 1100, durationSec: 50 },
 +    { title: "최근 1", publishedAt: "2026-10-20T00:00:00.000Z", viewCount: 4000, durationSec: 30 },
 +    { title: "최근 2", publishedAt: "2026-11-02T00:00:00.000Z", viewCount: 4800, durationSec: 500 },
@@ -1463,6 +1482,8 @@ diff -u -r -N a/test/yt-report.test.js b/test/yt-report.test.js
 +  assert.equal(JSON.stringify(report.instagram).includes("999"), false);
 +  assert.equal(report.distribute.includes("구글 블로그"), false);
 +  assert.equal(report.distribute.length, 7);
++  assert.equal(report.bars[0].views, 1000);
++  assert.equal(report.bars[0].thumbnail, "https://i.ytimg.com/vi/abc/mqdefault.jpg");
 +});
 +
 +test("instagram numbers appear only when supplied", () => {
@@ -1486,8 +1507,8 @@ diff -u -r -N a/test/yt-report.test.js b/test/yt-report.test.js
 +});
 diff -u -r -N a/test/yt-research.test.js b/test/yt-research.test.js
 --- a/test/yt-research.test.js	1970-01-01 00:00:00.000000000 +0000
-+++ b/test/yt-research.test.js	2026-11-12 07:22:53.362397798 +0000
-@@ -0,0 +1,197 @@
++++ b/test/yt-research.test.js	2026-11-12 07:31:45.247470477 +0000
+@@ -0,0 +1,198 @@
 +const fs = require("fs");
 +const os = require("os");
 +const path = require("path");
@@ -1621,6 +1642,7 @@ diff -u -r -N a/test/yt-research.test.js b/test/yt-research.test.js
 +  assert.equal(result.channels[0].subscribers, 1000);
 +  assert.equal(result.channels[0].videoCount, 20);
 +  assert.equal(result.channels[0].outliers[0].videoId, "hit1");
++  assert.equal(result.channels[0].recentVideos[0].thumbnail, "https://i.ytimg.com/vi/hit1/mqdefault.jpg");
 +  assert.equal(result.channels[1].id, "UCabcdefghijklmnopqrstuv");
 +  assert.equal(result.channels[2].error, "채널을 찾지 못했습니다.");
 +  const second = await research.compare({ email: "owner@example.test", q: "@TestKitchen" });
