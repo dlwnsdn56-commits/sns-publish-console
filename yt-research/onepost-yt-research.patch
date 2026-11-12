@@ -1,0 +1,1063 @@
+--- a/server.js
++++ b/server.js
+@@ -26,6 +26,7 @@
+ const { mountOnepostMcp } = require("./lib/mcp");
+ const { buildChannelStatus } = require("./lib/mcp-channels");
+ const { createMcpStore } = require("./lib/mcp-store");
++const { mountYtResearch } = require("./lib/yt-research");
+ 
+ const PORT = Number(process.env.PORT || 3000);
+ const HOST = process.env.HOST || "0.0.0.0";
+@@ -4488,6 +4489,10 @@
+   findJobByDraftId: (draftId) => store.getJobs().find((job) => job.mcpDraftId === draftId) || null,
+ });
+ 
++mountYtResearch(app, {
++  getSession,
++});
++
+ app.get("*", (req, res, next) => {
+   if (req.path.startsWith("/api/")) return next();
+   res.sendFile(path.join(__dirname, "public", "index.html"));
+--- a/lib/yt-research.js
++++ b/lib/yt-research.js
+@@ -0,0 +1,517 @@
++const fs = require("fs");
++const path = require("path");
++
++const SEARCH_TTL_MS = 12 * 60 * 60 * 1000;
++const STATS_TTL_MS = 24 * 60 * 60 * 1000;
++const DAILY_QUOTA = 10000;
++const QUOTA_STOP = 9500;
++const SEARCH_COST = 100;
++const LIST_COST = 1;
++const USER_SEARCH_LIMIT = 8;
++const USER_CHANNEL_LIMIT = 12;
++const OUTLIER_RATIO = 3;
++const SAMPLE_SIZE = 15;
++const QUOTA_MESSAGE = "오늘 유튜브에서 받아올 수 있는 횟수를 모두 썼습니다. 내일 다시 이용해 주세요.";
++const USER_LIMIT_MESSAGE = "오늘 이 계정으로 찾을 수 있는 횟수를 모두 썼습니다. 내일 다시 이용해 주세요.";
++
++function researchEnabled(env) {
++  return String((env || process.env).YT_RESEARCH_ENABLED || "") === "1";
++}
++
++function kstDay(date) {
++  return new Date(date.getTime() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
++}
++
++function isoDurationSeconds(iso) {
++  const match = /^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/.exec(String(iso || ""));
++  if (!match) return null;
++  return Number(match[1] || 0) * 3600 + Number(match[2] || 0) * 60 + Number(match[3] || 0);
++}
++
++function performanceScore(views, subscribers, hidden) {
++  const subs = Number(subscribers);
++  if (hidden || !Number.isFinite(subs) || subs <= 0) return null;
++  const count = Number(views);
++  if (!Number.isFinite(count) || count < 0) return null;
++  return Math.round((count / subs) * 10) / 10;
++}
++
++function outliersFrom(videos) {
++  const sample = (videos || []).filter((item) => Number.isFinite(Number(item.viewCount)));
++  if (!sample.length) return { averageViews: null, outliers: [] };
++  const total = sample.reduce((sum, item) => sum + Number(item.viewCount), 0);
++  const average = total / sample.length;
++  const outliers = sample.length < 2 ? [] : sample
++    .filter((item) => {
++      const others = (total - Number(item.viewCount)) / (sample.length - 1);
++      return others > 0 && Number(item.viewCount) >= others * OUTLIER_RATIO;
++    })
++    .map((item) => {
++      const others = (total - Number(item.viewCount)) / (sample.length - 1);
++      return Object.assign({}, item, { multiple: Math.round((Number(item.viewCount) / others) * 10) / 10 });
++    })
++    .sort((a, b) => Number(b.viewCount) - Number(a.viewCount));
++  return { averageViews: Math.round(average), outliers };
++}
++
++function uploadLabel(videos) {
++  const times = (videos || [])
++    .map((item) => Date.parse(item.publishedAt || ""))
++    .filter((item) => Number.isFinite(item))
++    .sort((a, b) => a - b);
++  if (times.length < 2) {
++    return { uploadEveryDays: null, uploadLabel: "최근 영상이 적어 올리는 간격을 계산하지 못했습니다." };
++  }
++  const gaps = [];
++  for (let i = 1; i < times.length; i += 1) gaps.push((times[i] - times[i - 1]) / 86400000);
++  gaps.sort((a, b) => a - b);
++  const days = Math.round(gaps[Math.floor(gaps.length / 2)] * 10) / 10;
++  return {
++    uploadEveryDays: days,
++    uploadLabel: days < 1 ? "거의 매일 올립니다" : "약 " + days + "일에 한 편",
++  };
++}
++
++function parseChannelInput(raw) {
++  const text = String(raw || "").trim();
++  if (!text) {
++    const err = new Error("채널 주소를 입력해 주세요.");
++    err.status = 400;
++    throw err;
++  }
++  let url = null;
++  try {
++    url = new URL(text);
++  } catch (_err) {
++    url = null;
++  }
++  if (url) {
++    const host = url.hostname.replace(/^www\./, "");
++    if (host !== "youtube.com" && host !== "m.youtube.com" && host !== "youtu.be") {
++      const err = new Error("유튜브 채널 주소만 넣을 수 있습니다.");
++      err.status = 400;
++      throw err;
++    }
++    const parts = url.pathname.split("/").filter(Boolean);
++    if (parts[0] === "channel" && parts[1]) return { id: parts[1] };
++    if (parts[0] && parts[0].startsWith("@")) return { handle: decodeURIComponent(parts[0].slice(1)).toLowerCase() };
++    if (parts[0] === "c" || parts[0] === "user" || parts[0] === "watch") {
++      const err = new Error("채널 주소는 @이름 또는 youtube.com/channel/ 주소로 넣어 주세요.");
++      err.status = 400;
++      throw err;
++    }
++  }
++  if (text.startsWith("@")) return { handle: text.slice(1).toLowerCase() };
++  if (/^UC[\w-]{20,}$/.test(text)) return { id: text };
++  if (/^[\w.\-]{2,80}$/.test(text)) return { handle: text.toLowerCase() };
++  const err = new Error("채널 주소를 확인해 주세요.");
++  err.status = 400;
++  throw err;
++}
++
++function createYtStore(options) {
++  const file = (options && options.file) || path.join(process.cwd(), "data", "yt-research-cache.json");
++  let cached = null;
++  function empty() {
++    return { cache: {}, usage: {}, quota: {} };
++  }
++  function load() {
++    if (cached) return cached;
++    try {
++      cached = JSON.parse(fs.readFileSync(file, "utf8"));
++    } catch (err) {
++      if (!err || err.code !== "ENOENT") throw err;
++      cached = empty();
++    }
++    cached.cache = cached.cache || {};
++    cached.usage = cached.usage || {};
++    cached.quota = cached.quota || {};
++    return cached;
++  }
++  function save() {
++    fs.mkdirSync(path.dirname(file), { recursive: true });
++    const tmp = file + "." + process.pid + ".tmp";
++    fs.writeFileSync(tmp, JSON.stringify(load()));
++    fs.renameSync(tmp, file);
++  }
++  return { load, save, file };
++}
++
++function createYtResearch(options) {
++  const opts = options || {};
++  const env = opts.env || process.env;
++  const store = opts.store || createYtStore(opts);
++  const nowFn = opts.now || (() => new Date());
++  const fetchImpl = opts.fetch || global.fetch;
++
++  function fail(status, message) {
++    const err = new Error(message);
++    err.status = status;
++    throw err;
++  }
++
++  function apiKey() {
++    const key = String(env.YOUTUBE_API_KEY || "");
++    if (!key) fail(503, "유튜브 연결 키가 설정되지 않았습니다. 관리자에게 알려 주세요.");
++    return key;
++  }
++
++  function dayBook() {
++    const day = kstDay(nowFn());
++    const quota = store.load().quota;
++    if (!quota[day]) quota[day] = { used: 0, exhausted: false };
++    return quota[day];
++  }
++
++  function markExhausted() {
++    const book = dayBook();
++    book.exhausted = true;
++    store.save();
++  }
++
++  function spend(cost) {
++    const book = dayBook();
++    if (book.exhausted || book.used + cost > QUOTA_STOP) {
++      book.exhausted = true;
++      store.save();
++      fail(429, QUOTA_MESSAGE);
++    }
++    book.used += cost;
++    store.save();
++  }
++
++  function takeUser(email, field, limit) {
++    const day = kstDay(nowFn());
++    const id = String(email || "").trim().toLowerCase();
++    const usage = store.load().usage;
++    if (!usage[id]) usage[id] = {};
++    if (!usage[id][day]) usage[id][day] = { search: 0, channel: 0 };
++    if (usage[id][day][field] >= limit) fail(429, USER_LIMIT_MESSAGE);
++    usage[id][day][field] += 1;
++    store.save();
++  }
++
++  function cacheGet(key, ttl) {
++    const row = store.load().cache[key];
++    if (!row) return null;
++    if (nowFn().getTime() - Date.parse(row.at) > ttl) return null;
++    return row.value;
++  }
++
++  function cacheSet(key, value) {
++    store.load().cache[key] = { at: nowFn().toISOString(), value };
++    store.save();
++  }
++
++  async function yt(methodPath, params) {
++    const url = new URL("https://www.googleapis.com/youtube/v3/" + methodPath);
++    Object.keys(params || {}).forEach((key) => {
++      if (params[key] != null && params[key] !== "") url.searchParams.set(key, String(params[key]));
++    });
++    url.searchParams.set("key", apiKey());
++    const res = await fetchImpl(url, { method: "GET" });
++    const body = await res.json().catch(() => ({}));
++    if (!res.ok) {
++      const reason = body && body.error && body.error.errors && body.error.errors[0] && body.error.errors[0].reason;
++      if (res.status === 403 && (reason === "quotaExceeded" || reason === "dailyLimitExceeded")) {
++        markExhausted();
++        fail(429, QUOTA_MESSAGE);
++      }
++      fail(502, "유튜브에서 정보를 가져오지 못했습니다.");
++    }
++    return body;
++  }
++
++  function videoKind(durationSec) {
++    if (durationSec == null) return "unknown";
++    return durationSec <= 60 ? "shorts" : "long";
++  }
++
++  function publicVideo(item) {
++    return {
++      videoId: item.videoId,
++      title: item.title,
++      channelId: item.channelId,
++      channelTitle: item.channelTitle,
++      publishedAt: item.publishedAt,
++      viewCount: item.viewCount,
++      subscriberCount: item.subscriberHidden ? null : item.subscriberCount,
++      subscriberHidden: !!item.subscriberHidden,
++      score: item.score,
++      durationSec: item.durationSec,
++      kind: videoKind(item.durationSec),
++      url: "https://www.youtube.com/watch?v=" + item.videoId,
++      thumbnail: item.thumbnail || "",
++    };
++  }
++
++  async function loadSearch(query, period) {
++    const key = "search:" + query + ":" + String(period || "30");
++    const hit = cacheGet(key, SEARCH_TTL_MS);
++    if (hit) return { videos: hit, cached: true };
++    const publishedAfter = { "7": 7, "30": 30, "90": 90, "365": 365 }[String(period || "30")];
++    const params = {
++      part: "snippet",
++      type: "video",
++      maxResults: SAMPLE_SIZE,
++      q: query,
++      order: "viewCount",
++      regionCode: "KR",
++    };
++    if (publishedAfter) {
++      params.publishedAfter = new Date(nowFn().getTime() - publishedAfter * 86400000).toISOString();
++    }
++    spend(SEARCH_COST);
++    const searched = await yt("search", params);
++    const ids = (searched.items || [])
++      .map((item) => item.id && item.id.videoId)
++      .filter(Boolean);
++    if (!ids.length) {
++      cacheSet(key, []);
++      return { videos: [], cached: false };
++    }
++    spend(LIST_COST);
++    const details = await yt("videos", {
++      part: "snippet,statistics,contentDetails",
++      id: ids.join(","),
++      maxResults: SAMPLE_SIZE,
++    });
++    const channelIds = [...new Set((details.items || []).map((item) => item.snippet && item.snippet.channelId).filter(Boolean))];
++    let channels = { items: [] };
++    if (channelIds.length) {
++      spend(LIST_COST);
++      channels = await yt("channels", {
++        part: "statistics",
++        id: channelIds.join(","),
++        maxResults: SAMPLE_SIZE,
++      });
++    }
++    const subs = {};
++    (channels.items || []).forEach((item) => {
++      subs[item.id] = {
++        count: Number(item.statistics && item.statistics.subscriberCount),
++        hidden: !!(item.statistics && item.statistics.hiddenSubscriberCount),
++      };
++    });
++    const videos = (details.items || []).map((item) => {
++      const channel = subs[item.snippet.channelId] || { count: null, hidden: true };
++      const views = Number(item.statistics && item.statistics.viewCount);
++      return {
++        videoId: item.id,
++        title: item.snippet.title,
++        channelId: item.snippet.channelId,
++        channelTitle: item.snippet.channelTitle,
++        publishedAt: item.snippet.publishedAt,
++        viewCount: Number.isFinite(views) ? views : null,
++        subscriberCount: channel.hidden ? null : channel.count,
++        subscriberHidden: channel.hidden,
++        score: performanceScore(views, channel.count, channel.hidden),
++        durationSec: isoDurationSeconds(item.contentDetails && item.contentDetails.duration),
++        thumbnail: (item.snippet.thumbnails && item.snippet.thumbnails.medium && item.snippet.thumbnails.medium.url) || "",
++      };
++    });
++    cacheSet(key, videos);
++    return { videos, cached: false };
++  }
++
++  async function search(input) {
++    const query = String((input && input.q) || "").trim().replace(/\s+/g, " ");
++    if (!query) fail(400, "찾을 단어를 입력해 주세요.");
++    if (query.length > 80) fail(400, "찾을 단어는 80자 안으로 입력해 주세요.");
++    const period = ["7", "30", "90", "365", "all"].includes(String(input.period)) ? String(input.period) : "30";
++    const kind = ["all", "shorts", "long"].includes(String(input.kind)) ? String(input.kind) : "all";
++    const key = "search:" + query.toLowerCase() + ":" + period;
++    const cached = !!cacheGet(key, SEARCH_TTL_MS);
++    if (!cached) takeUser(input.email, "search", USER_SEARCH_LIMIT);
++    const loaded = await loadSearch(query.toLowerCase(), period);
++    const videos = loaded.videos
++      .map(publicVideo)
++      .filter((item) => kind === "all" || item.kind === kind);
++    return {
++      cached: loaded.cached,
++      query,
++      period,
++      kind,
++      videos,
++      quota: { used: dayBook().used, limit: DAILY_QUOTA },
++    };
++  }
++
++  async function loadChannel(parsed) {
++    const lookupKey = parsed.id ? "id:" + parsed.id : "handle:" + parsed.handle.toLowerCase();
++    const cached = cacheGet("channel:" + lookupKey, STATS_TTL_MS);
++    if (cached) return { channel: cached, cached: true };
++    spend(LIST_COST);
++    const found = await yt("channels", Object.assign({
++      part: "snippet,statistics,contentDetails",
++      maxResults: 1,
++    }, parsed.id ? { id: parsed.id } : { forHandle: parsed.handle }));
++    const channel = (found.items || [])[0];
++    if (!channel) fail(404, "채널을 찾지 못했습니다.");
++    const uploads = channel.contentDetails && channel.contentDetails.relatedPlaylists && channel.contentDetails.relatedPlaylists.uploads;
++    let recent = [];
++    if (uploads) {
++      spend(LIST_COST);
++      const playlist = await yt("playlistItems", {
++        part: "contentDetails",
++        playlistId: uploads,
++        maxResults: SAMPLE_SIZE,
++      });
++      const ids = (playlist.items || []).map((item) => item.contentDetails && item.contentDetails.videoId).filter(Boolean);
++      if (ids.length) {
++        spend(LIST_COST);
++        const details = await yt("videos", {
++          part: "snippet,statistics,contentDetails",
++          id: ids.join(","),
++          maxResults: SAMPLE_SIZE,
++        });
++        const hidden = !!(channel.statistics && channel.statistics.hiddenSubscriberCount);
++        const subs = Number(channel.statistics && channel.statistics.subscriberCount);
++        recent = (details.items || []).map((item) => {
++          const views = Number(item.statistics && item.statistics.viewCount);
++          return {
++            videoId: item.id,
++            title: item.snippet.title,
++            publishedAt: item.snippet.publishedAt,
++            viewCount: Number.isFinite(views) ? views : null,
++            durationSec: isoDurationSeconds(item.contentDetails && item.contentDetails.duration),
++            score: performanceScore(views, subs, hidden),
++            url: "https://www.youtube.com/watch?v=" + item.id,
++          };
++        });
++      }
++    }
++    const hidden = !!(channel.statistics && channel.statistics.hiddenSubscriberCount);
++    const outlier = outliersFrom(recent);
++    const cadence = uploadLabel(recent);
++    const value = {
++      id: channel.id,
++      title: channel.snippet.title,
++      handle: (channel.snippet.customUrl || "").replace(/^@/, ""),
++      thumbnail: (channel.snippet.thumbnails && channel.snippet.thumbnails.medium && channel.snippet.thumbnails.medium.url) || "",
++      url: "https://www.youtube.com/channel/" + channel.id,
++      subscribers: hidden ? null : Number(channel.statistics && channel.statistics.subscriberCount),
++      subscriberHidden: hidden,
++      views: Number(channel.statistics && channel.statistics.viewCount),
++      videoCount: Number(channel.statistics && channel.statistics.videoCount),
++      recentCount: recent.length,
++      recentAverageViews: outlier.averageViews,
++      uploadEveryDays: cadence.uploadEveryDays,
++      uploadLabel: cadence.uploadLabel,
++      outliers: outlier.outliers,
++    };
++    cacheSet("channel:" + lookupKey, value);
++    cacheSet("channel:id:" + channel.id, value);
++    return { channel: value, cached: false };
++  }
++
++  async function compare(input) {
++    const lines = String((input && input.q) || "")
++      .split(/\r?\n/)
++      .map((item) => item.trim())
++      .filter(Boolean);
++    if (!lines.length) fail(400, "비교할 채널 주소를 입력해 주세요.");
++    const chosen = lines.slice(0, 3);
++    const channels = [];
++    for (const line of chosen) {
++      try {
++        const parsed = parseChannelInput(line);
++        const lookupKey = parsed.id ? "id:" + parsed.id : "handle:" + parsed.handle.toLowerCase();
++        const cached = cacheGet("channel:" + lookupKey, STATS_TTL_MS) || (parsed.id && cacheGet("channel:id:" + parsed.id, STATS_TTL_MS));
++        if (!cached) takeUser(input.email, "channel", USER_CHANNEL_LIMIT);
++        const loaded = await loadChannel(parsed);
++        channels.push(loaded.channel);
++      } catch (err) {
++        channels.push({ query: line, error: err.message || "채널을 찾지 못했습니다." });
++      }
++    }
++    return { channels, trimmed: lines.length > 3, quota: { used: dayBook().used, limit: DAILY_QUOTA } };
++  }
++
++  function status(email) {
++    const day = kstDay(nowFn());
++    const id = String(email || "").trim().toLowerCase();
++    const used = (store.load().usage[id] && store.load().usage[id][day]) || { search: 0, channel: 0 };
++    const book = dayBook();
++    return {
++      enabled: true,
++      quotaUsed: book.used,
++      quotaLimit: DAILY_QUOTA,
++      searchUsed: used.search,
++      searchLimit: USER_SEARCH_LIMIT,
++      channelUsed: used.channel,
++      channelLimit: USER_CHANNEL_LIMIT,
++    };
++  }
++
++  return {
++    search,
++    compare,
++    status,
++    parseChannelInput,
++    performanceScore,
++    outliersFrom,
++    isoDurationSeconds,
++  };
++}
++
++function mountYtResearch(app, deps) {
++  const source = deps || {};
++  if (!researchEnabled(source.env || process.env)) {
++    const off = (_req, res) => res.status(404).json({ error: "유튜브 리서치는 꺼져 있습니다." });
++    app.use("/api/yt-research", off);
++    return { enabled: false };
++  }
++  const research = source.research || createYtResearch(source);
++  function user(req) {
++    const session = source.getSession(req);
++    if (!session || !session.email) return null;
++    return session;
++  }
++  app.get("/api/yt-research/status", (req, res) => {
++    const session = user(req);
++    if (!session) return res.status(401).json({ error: "로그인이 필요합니다." });
++    res.json(research.status(session.email));
++  });
++  app.get("/api/yt-research/search", async (req, res) => {
++    const session = user(req);
++    if (!session) return res.status(401).json({ error: "로그인이 필요합니다." });
++    try {
++      res.json(await research.search({
++        email: session.email,
++        q: req.query.q,
++        period: req.query.period,
++        kind: req.query.kind,
++      }));
++    } catch (err) {
++      res.status(err.status || 500).json({ error: err.message });
++    }
++  });
++  app.get("/api/yt-research/channels", async (req, res) => {
++    const session = user(req);
++    if (!session) return res.status(401).json({ error: "로그인이 필요합니다." });
++    try {
++      res.json(await research.compare({ email: session.email, q: req.query.q }));
++    } catch (err) {
++      res.status(err.status || 500).json({ error: err.message });
++    }
++  });
++  return { enabled: true, research };
++}
++
++module.exports = {
++  DAILY_QUOTA,
++  QUOTA_STOP,
++  SEARCH_COST,
++  OUTLIER_RATIO,
++  USER_SEARCH_LIMIT,
++  USER_CHANNEL_LIMIT,
++  researchEnabled,
++  parseChannelInput,
++  performanceScore,
++  outliersFrom,
++  isoDurationSeconds,
++  uploadLabel,
++  createYtResearch,
++  mountYtResearch,
++};
+--- a/test/yt-research.test.js
++++ b/test/yt-research.test.js
+@@ -0,0 +1,197 @@
++const fs = require("fs");
++const os = require("os");
++const path = require("path");
++const test = require("node:test");
++const assert = require("node:assert/strict");
++const express = require("express");
++const {
++  createYtResearch,
++  mountYtResearch,
++  parseChannelInput,
++  performanceScore,
++  outliersFrom,
++  OUTLIER_RATIO,
++  QUOTA_STOP,
++  SEARCH_COST,
++} = require("../lib/yt-research");
++
++function jsonResponse(status, body) {
++  return {
++    ok: status >= 200 && status < 300,
++    status,
++    json: async () => body,
++  };
++}
++
++function youtubeMock(calls) {
++  return async (url) => {
++    const pathName = url.pathname;
++    calls.push(pathName + "?" + url.searchParams.toString().replace(/key=[^&]+/, "key=REDACTED"));
++    assert.equal(url.searchParams.get("key"), "test-key");
++    if (pathName.endsWith("/search")) {
++      return jsonResponse(200, {
++        items: [
++          { id: { videoId: "short1" } },
++          { id: { videoId: "long1" } },
++        ],
++      });
++    }
++    if (pathName.endsWith("/videos")) {
++      const ids = url.searchParams.get("id").split(",");
++      return jsonResponse(200, {
++        items: ids.map((id) => ({
++          id,
++          snippet: {
++            title: id === "short1" ? "쇼츠 레시피" : id === "hit1" ? "대박 영상" : "일반 영상",
++            channelId: "UCabcdefghijklmnopqrstuv",
++            channelTitle: "테스트키친",
++            publishedAt: id === "hit1" ? "2026-11-01T00:00:00.000Z" : "2026-11-08T00:00:00.000Z",
++            thumbnails: { medium: { url: "" } },
++          },
++          statistics: { viewCount: id === "hit1" ? "30000" : id === "short1" ? "12000" : "1000" },
++          contentDetails: { duration: id === "short1" ? "PT45S" : "PT5M" },
++        })),
++      });
++    }
++    if (pathName.endsWith("/channels")) {
++      if (url.searchParams.get("forHandle") === "missing") return jsonResponse(200, { items: [] });
++      return jsonResponse(200, {
++        items: [{
++          id: "UCabcdefghijklmnopqrstuv",
++          snippet: { title: "테스트키친", customUrl: "@testkitchen", thumbnails: { medium: { url: "" } } },
++          statistics: { subscriberCount: "1000", viewCount: "50000", videoCount: "20", hiddenSubscriberCount: false },
++          contentDetails: { relatedPlaylists: { uploads: "UUabcdefghijklmnopqrstuv" } },
++        }],
++      });
++    }
++    if (pathName.endsWith("/playlistItems")) {
++      return jsonResponse(200, {
++        items: [
++          { contentDetails: { videoId: "hit1" } },
++          { contentDetails: { videoId: "long1" } },
++          { contentDetails: { videoId: "long1" } },
++        ],
++      });
++    }
++    return jsonResponse(500, {});
++  };
++}
++
++function harness() {
++  const calls = [];
++  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "yt-research-"));
++  const research = createYtResearch({
++    file: path.join(dir, "cache.json"),
++    now: () => new Date("2026-11-12T03:00:00.000Z"),
++    fetch: youtubeMock(calls),
++    env: { YOUTUBE_API_KEY: "test-key", YT_RESEARCH_ENABLED: "1" },
++  });
++  return { research, calls, dir };
++}
++
++test("score is views divided by subscribers and outliers are at least three times the average", () => {
++  assert.equal(performanceScore(12000, 1000, false), 12);
++  assert.equal(performanceScore(12000, 0, true), null);
++  const found = outliersFrom([
++    { videoId: "a", viewCount: 1000 },
++    { videoId: "b", viewCount: 1000 },
++    { videoId: "c", viewCount: 9000 },
++  ]);
++  assert.equal(OUTLIER_RATIO, 3);
++  assert.equal(found.averageViews, 3667);
++  assert.deepEqual(found.outliers.map((item) => item.videoId), ["c"]);
++});
++
++test("keyword search is cached, filterable, and does not call YouTube again", async () => {
++  const { research, calls } = harness();
++  const first = await research.search({ email: "Owner@example.test", q: "김치찌개", period: "30", kind: "shorts" });
++  assert.equal(first.cached, false);
++  assert.equal(first.videos.length, 1);
++  assert.equal(first.videos[0].kind, "shorts");
++  assert.equal(first.videos[0].score, 12);
++  assert.equal(first.videos[0].subscriberCount, 1000);
++  const again = await research.search({ email: "owner@example.test", q: "김치찌개", period: "30", kind: "long" });
++  assert.equal(again.cached, true);
++  assert.equal(again.videos.length, 1);
++  assert.equal(again.videos[0].kind, "long");
++  assert.equal(calls.length, 3);
++});
++
++test("channel compare keeps three channels and marks videos far above the recent average", async () => {
++  const { research, calls } = harness();
++  const parsed = parseChannelInput("https://www.youtube.com/@TestKitchen");
++  assert.deepEqual(parsed, { handle: "testkitchen" });
++  const result = await research.compare({
++    email: "owner@example.test",
++    q: "@TestKitchen\nhttps://www.youtube.com/channel/UCabcdefghijklmnopqrstuv\n@missing\n@fourth",
++  });
++  assert.equal(result.trimmed, true);
++  assert.equal(result.channels.length, 3);
++  assert.equal(result.channels[0].title, "테스트키친");
++  assert.equal(result.channels[0].subscribers, 1000);
++  assert.equal(result.channels[0].videoCount, 20);
++  assert.equal(result.channels[0].outliers[0].videoId, "hit1");
++  assert.equal(result.channels[1].id, "UCabcdefghijklmnopqrstuv");
++  assert.equal(result.channels[2].error, "채널을 찾지 못했습니다.");
++  const second = await research.compare({ email: "owner@example.test", q: "@TestKitchen" });
++  assert.equal(second.channels[0].title, "테스트키친");
++  assert.equal(calls.filter((item) => item.startsWith("/youtube/v3/channels")).length >= 1, true);
++});
++
++test("quota and per-user limits stop before another YouTube call", async () => {
++  const calls = [];
++  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "yt-research-"));
++  const file = path.join(dir, "cache.json");
++  fs.writeFileSync(file, JSON.stringify({
++    cache: {},
++    usage: {},
++    quota: { "2026-11-12": { used: QUOTA_STOP - SEARCH_COST + 1, exhausted: false } },
++  }));
++  const research = createYtResearch({
++    file,
++    now: () => new Date("2026-11-12T03:00:00.000Z"),
++    fetch: youtubeMock(calls),
++    env: { YOUTUBE_API_KEY: "test-key" },
++  });
++  await assert.rejects(
++    () => research.search({ email: "owner@example.test", q: "새 검색", period: "7" }),
++    /오늘 유튜브에서 받아올 수 있는 횟수/
++  );
++  assert.equal(calls.length, 0);
++
++  const limited = harness();
++  for (let i = 0; i < 8; i += 1) {
++    await limited.research.search({ email: "owner@example.test", q: "단어" + i, period: "all" });
++  }
++  await assert.rejects(
++    () => limited.research.search({ email: "owner@example.test", q: "단어여분", period: "all" }),
++    /이 계정으로 찾을 수 있는 횟수/
++  );
++});
++
++test("the flag hides the routes and the source does not contain an API key", async () => {
++  const source = fs.readFileSync(path.join(__dirname, "..", "lib", "yt-research.js"), "utf8");
++  assert.equal(source.includes("AIza"), false);
++  assert.equal(source.includes("YOUTUBE_API_KEY"), true);
++  assert.equal(source.includes('YT_RESEARCH_ENABLED || "") === "1"'), true);
++  const app = express();
++  const mounted = mountYtResearch(app, { env: {} });
++  assert.equal(mounted.enabled, false);
++  const server = await new Promise((resolve) => {
++    const listening = app.listen(0, "127.0.0.1", () => resolve(listening));
++  });
++  const port = server.address().port;
++  const res = await fetch("http://127.0.0.1:" + port + "/api/yt-research/search?q=test");
++  const body = await res.json();
++  assert.equal(res.status, 404);
++  assert.equal(body.error, "유튜브 리서치는 꺼져 있습니다.");
++  await new Promise((resolve) => server.close(resolve));
++
++  const indexPath = path.join(__dirname, "..", "public", "index.html");
++  if (fs.existsSync(indexPath)) {
++    const index = fs.readFileSync(indexPath, "utf8");
++    assert.equal(index.includes("유튜브 리서치"), true);
++    assert.equal(index.includes("월 9,900원"), true);
++    assert.equal(index.includes("terms.html") || index.includes("/terms"), true);
++  }
++});
+--- a/public/index.html	2026-11-12 07:00:13.454683762 +0000
++++ b/public/index.html	2026-11-12 07:01:25.494993650 +0000
+@@ -125,6 +125,7 @@
+         <a href="/scheduled" data-nav="/scheduled">예약</a>
+         <a href="/insights" data-nav="/insights">조회수</a>
+         <a href="/analysis" data-nav="/analysis">채널 분석</a>
++        <a href="/yt-research" data-nav="/yt-research">유튜브 리서치</a>
+         <a href="/mcp/guide">AI 연결</a>
+         <a href="/trends" data-nav="/trends" id="trends-nav-link" hidden>트렌드</a>
+         <a href="/mania" data-nav="/mania" id="mania-nav-link" hidden>매니아 취향</a>
+@@ -743,6 +744,7 @@
+       <section id="view-insights" class="hidden">
+         <h2>조회수</h2>
+         <p class="sub" id="insights-sub">연결한 유튜브·틱톡 채널의 조회수와 구독자 수를 하루 한 번 저장해서 보여 드려요.</p>
++        <p class="hint">이 화면은 내 채널 기록입니다. 단어로 다른 유튜브 영상을 찾으려면 <a href="/yt-research" data-nav="/yt-research">유튜브 리서치</a>를 여세요.</p>
+         <div class="insights-toolbar" id="insights-toolbar">
+           <div class="insights-periods" role="group" aria-label="기간">
+             <button type="button" class="period-btn active" data-period="daily">일간</button>
+@@ -769,10 +771,70 @@
+       <section id="view-analysis" class="hidden">
+         <h2>채널 분석</h2>
+         <p class="sub">왼쪽에서 고른 가게에 연결된 채널만 보여 줍니다. 숫자는 인사이트 스냅샷에 있는 값만 쓰고, 없는 값은 0으로 바꾸지 않습니다.</p>
++        <p class="hint">다른 유튜브 채널을 찾거나 최대 3개를 나란히 보려면 <a href="/yt-research" data-nav="/yt-research">유튜브 리서치</a>를 여세요.</p>
+         <p class="hint" id="analysis-status"></p>
+         <div id="analysis-body"></div>
+       </section>
+ 
++      <section id="view-yt-research" class="hidden">
++        <h2>유튜브 리서치</h2>
++        <p class="sub">단어를 넣으면 유튜브 영상을 찾고, 채널 주소를 넣으면 최대 3개를 나란히 비교합니다. 숫자는 유튜브가 공개한 값만 보여 줍니다.</p>
++        <p class="hint">조회수는 내 채널 기록이고, 채널 분석은 이 가게에 연결된 채널입니다. 여기서는 다른 채널을 찾습니다. 기능이 꺼져 있으면 결과가 나오지 않습니다.</p>
++        <p class="msg err" id="ytr-msg" hidden></p>
++
++        <div class="trends-section">
++          <h3>단어로 영상 찾기</h3>
++          <form id="ytr-search-form" class="ytr-form">
++            <label>찾을 단어
++              <input id="ytr-q" type="search" placeholder="예: 김치찌개 레시피" maxlength="80" />
++            </label>
++            <label>기간
++              <select id="ytr-period">
++                <option value="7">최근 7일</option>
++                <option value="30" selected>최근 30일</option>
++                <option value="90">최근 90일</option>
++                <option value="365">최근 1년</option>
++                <option value="all">전체</option>
++              </select>
++            </label>
++            <label>길이
++              <select id="ytr-kind">
++                <option value="all">전체</option>
++                <option value="shorts">쇼츠 (1분 이하)</option>
++                <option value="long">긴 영상</option>
++              </select>
++            </label>
++            <label>최소 조회수
++              <input id="ytr-min-views" type="number" min="0" step="1000" value="0" />
++            </label>
++            <label>정렬
++              <select id="ytr-sort">
++                <option value="score">구독자 대비 조회수</option>
++                <option value="views">조회수</option>
++                <option value="date">올린 날짜</option>
++                <option value="subs">구독자 수</option>
++              </select>
++            </label>
++            <button type="submit" class="btn primary" id="ytr-search-btn">찾기</button>
++          </form>
++          <p class="hint">기간과 영상 길이를 바꾸면 찾기를 다시 눌러 주세요. 정렬과 최소 조회수는 지금 목록에서 바로 바뀝니다.</p>
++          <p class="hint" id="ytr-search-status"></p>
++          <div id="ytr-search-list" class="trends-videos"></div>
++        </div>
++
++        <div class="trends-section">
++          <h3>채널 비교 <small>주소나 @이름을 한 줄에 하나, 최대 3개</small></h3>
++          <form id="ytr-channel-form" class="ytr-form">
++            <label>채널 주소
++              <textarea id="ytr-channels" rows="3" placeholder="@channel&#10;https://www.youtube.com/@channel"></textarea>
++            </label>
++            <button type="submit" class="btn primary" id="ytr-channel-btn">비교</button>
++          </form>
++          <p class="hint" id="ytr-channel-status"></p>
++          <div id="ytr-channel-list" class="ytr-compare"></div>
++        </div>
++      </section>
++
+       <section id="view-mania" class="hidden">
+         <h2>매니아 취향 <span class="badge trends-badge">관리자 미리보기</span></h2>
+         <p class="sub">인외·퍼리·수인처럼 매니아 취향 키워드로 찾은 최근 7일 유튜브 영상이에요. 비슷한 새 키워드가 보이면 조금씩 더 찾아요.</p>
+--- a/public/app.js	2026-11-12 07:00:13.458683792 +0000
++++ b/public/app.js	2026-11-12 07:02:30.739057918 +0000
+@@ -38,6 +38,7 @@
+     "/naver": "view-naver",
+     "/insights": "view-insights",
+     "/analysis": "view-analysis",
++    "/yt-research": "view-yt-research",
+     "/trends": "view-trends",
+     "/mania": "view-mania",
+     "/billing": "view-billing",
+@@ -661,6 +662,8 @@
+     document.getElementById("view-insights").classList.toggle("hidden", p !== "/insights");
+     const viewAnalysis = document.getElementById("view-analysis");
+     if (viewAnalysis) viewAnalysis.classList.toggle("hidden", p !== "/analysis");
++    const viewYtResearch = document.getElementById("view-yt-research");
++    if (viewYtResearch) viewYtResearch.classList.toggle("hidden", p !== "/yt-research");
+     const viewTrends = document.getElementById("view-trends");
+     if (viewTrends) viewTrends.classList.toggle("hidden", p !== "/trends");
+     const viewMania = document.getElementById("view-mania");
+@@ -809,6 +812,8 @@
+       if (omnibox) omnibox.textContent = "인사이트";
+     } else if (p === "/analysis") {
+       if (omnibox) omnibox.textContent = "채널 분석";
++    } else if (p === "/yt-research") {
++      if (omnibox) omnibox.textContent = "유튜브 리서치";
+     } else if (p === "/trends") {
+       if (omnibox) omnibox.textContent = "트렌드";
+     } else if (p === "/mania") {
+@@ -831,6 +836,7 @@
+     if (p === "/naver") loadNaver();
+     if (p === "/insights") renderInsights();
+     if (p === "/analysis") renderChannelAnalysis();
++    if (p === "/yt-research") loadYtResearch();
+     if (p === "/trends") loadTrends();
+     if (p === "/mania") loadMania();
+     if (p === "/billing") loadBillingPage();
+@@ -4582,6 +4588,173 @@
+     }
+   }
+ 
++  /* ---------- 유튜브 리서치 ---------- */
++  let ytrVideos = [];
++  let ytrNote = "";
++  let ytrBound = false;
++  let ytrReady = false;
++
++  function ytrNum(value) {
++    if (value == null || value === "") return "비공개";
++    return Number(value).toLocaleString("ko-KR");
++  }
++
++  function ytrDate(iso) {
++    const time = Date.parse(iso || "");
++    if (!Number.isFinite(time)) return "";
++    return new Date(time).toLocaleDateString("ko-KR", { timeZone: "Asia/Seoul" });
++  }
++
++  function ytrScore(video) {
++    if (video.subscriberHidden || video.score == null) return "구독자 수 비공개";
++    return video.score + "배";
++  }
++
++  function renderYtrSearch() {
++    const list = document.getElementById("ytr-search-list");
++    const status = document.getElementById("ytr-search-status");
++    if (!list) return;
++    const min = Number(document.getElementById("ytr-min-views").value || 0);
++    const sort = document.getElementById("ytr-sort").value;
++    const rank = {
++      score: (a, b) => (b.score || 0) - (a.score || 0),
++      views: (a, b) => (b.viewCount || 0) - (a.viewCount || 0),
++      date: (a, b) => Date.parse(b.publishedAt || 0) - Date.parse(a.publishedAt || 0),
++      subs: (a, b) => (b.subscriberCount || 0) - (a.subscriberCount || 0),
++    };
++    const rows = ytrVideos.filter((item) => (item.viewCount || 0) >= min).slice().sort(rank[sort] || rank.score);
++    if (status && ytrVideos.length) {
++      status.textContent = (ytrNote ? ytrNote + " " : "") + rows.length + "개 영상을 보여 줍니다.";
++    }
++    if (!rows.length) {
++      list.innerHTML = '<div class="trends-empty">조건에 맞는 영상이 없습니다. 단어나 기간을 바꿔 다시 찾아 보세요.</div>';
++      return;
++    }
++    list.innerHTML = rows.map((video) => `<article class="trend-video">
++      <a class="tv-thumb" href="${esc(video.url)}" target="_blank" rel="noopener noreferrer"><span class="tv-dur">${video.kind === "shorts" ? "쇼츠" : "긴 영상"}</span></a>
++      <div class="tv-body">
++        <a class="tv-title" href="${esc(video.url)}" target="_blank" rel="noopener noreferrer">${esc(video.title)}</a>
++        <div class="tv-meta">${esc(video.channelTitle)} · ${esc(ytrDate(video.publishedAt))}</div>
++        <div class="tv-meta">조회수 ${esc(ytrNum(video.viewCount))} · 구독자 ${esc(ytrNum(video.subscriberCount))}</div>
++        <div class="tv-meta">구독자 대비 조회수 <b class="ytr-score">${esc(ytrScore(video))}</b></div>
++      </div>
++    </article>`).join("");
++  }
++
++  function renderYtrChannels(data) {
++    const list = document.getElementById("ytr-channel-list");
++    const status = document.getElementById("ytr-channel-status");
++    if (!list) return;
++    if (status) {
++      status.textContent = data && data.trimmed ? "주소는 앞에서 3개만 비교했습니다." : "";
++    }
++    const cards = (data && data.channels) || [];
++    if (!cards.length) {
++      list.innerHTML = "";
++      return;
++    }
++    list.innerHTML = cards.map((channel) => {
++      if (channel.error) {
++        return `<article class="insight-card ytr-card"><div class="ic-name">${esc(channel.query || "채널")}</div><p class="ic-warn">${esc(channel.error)}</p></article>`;
++      }
++      const outliers = (channel.outliers || []).map((video) => `<div class="ytr-outlier">
++        <a href="${esc(video.url)}" target="_blank" rel="noopener noreferrer">${esc(video.title)}</a>
++        <div class="tv-meta">조회수 ${esc(ytrNum(video.viewCount))} · 다른 최근 영상보다 ${esc(String(video.multiple))}배 · ${esc(ytrDate(video.publishedAt))}</div>
++      </div>`).join("");
++      return `<article class="insight-card ytr-card">
++        <div class="ic-head"><a class="ic-name" href="${esc(channel.url)}" target="_blank" rel="noopener noreferrer">${esc(channel.title)}</a></div>
++        <div class="ic-row"><span>구독자</span><span>${esc(ytrNum(channel.subscribers))}</span></div>
++        <div class="ic-row"><span>총 조회수</span><span>${esc(ytrNum(channel.views))}</span></div>
++        <div class="ic-row"><span>영상 수</span><span>${esc(ytrNum(channel.videoCount))}</span></div>
++        <div class="ic-row"><span>최근 평균 조회수</span><span>${esc(ytrNum(channel.recentAverageViews))}</span></div>
++        <div class="ic-row"><span>올리는 간격</span><span>${esc(channel.uploadLabel || "")}</span></div>
++        <h4>평균보다 훨씬 많이 본 영상</h4>
++        <div class="ytr-outliers">${outliers || '<p class="ic-note">최근 영상 중에 평균의 3배를 넘는 영상이 없습니다.</p>'}</div>
++      </article>`;
++    }).join("");
++  }
++
++  function bindYtResearch() {
++    if (ytrBound) return;
++    const searchForm = document.getElementById("ytr-search-form");
++    const channelForm = document.getElementById("ytr-channel-form");
++    if (!searchForm || !channelForm) return;
++    ytrBound = true;
++    searchForm.addEventListener("submit", async (event) => {
++      event.preventDefault();
++      const status = document.getElementById("ytr-search-status");
++      const button = document.getElementById("ytr-search-btn");
++      if (button) button.disabled = true;
++      if (status) status.textContent = "찾는 중…";
++      try {
++        const params = new URLSearchParams({
++          q: document.getElementById("ytr-q").value,
++          period: document.getElementById("ytr-period").value,
++          kind: document.getElementById("ytr-kind").value,
++        });
++        const res = await fetch("/api/yt-research/search?" + params.toString());
++        const data = await res.json().catch(() => ({}));
++        if (!res.ok) throw new Error(data.error || "영상을 찾지 못했습니다.");
++        ytrVideos = data.videos || [];
++        ytrNote = data.cached ? "조금 전에 받아 둔 결과입니다." : "유튜브에서 새로 받아 왔습니다.";
++        renderYtrSearch();
++      } catch (err) {
++        ytrVideos = [];
++        if (status) status.textContent = (err && err.message) || "영상을 찾지 못했습니다.";
++        renderYtrSearch();
++      } finally {
++        if (button) button.disabled = !ytrReady;
++      }
++    });
++    ["ytr-min-views", "ytr-sort"].forEach((id) => {
++      const el = document.getElementById(id);
++      if (el) el.addEventListener("input", renderYtrSearch);
++      if (el) el.addEventListener("change", renderYtrSearch);
++    });
++    channelForm.addEventListener("submit", async (event) => {
++      event.preventDefault();
++      const status = document.getElementById("ytr-channel-status");
++      const button = document.getElementById("ytr-channel-btn");
++      if (button) button.disabled = true;
++      if (status) status.textContent = "채널을 찾는 중…";
++      try {
++        const params = new URLSearchParams({ q: document.getElementById("ytr-channels").value });
++        const res = await fetch("/api/yt-research/channels?" + params.toString());
++        const data = await res.json().catch(() => ({}));
++        if (!res.ok) throw new Error(data.error || "채널을 찾지 못했습니다.");
++        renderYtrChannels(data);
++      } catch (err) {
++        if (status) status.textContent = (err && err.message) || "채널을 찾지 못했습니다.";
++      } finally {
++        if (button) button.disabled = !ytrReady;
++      }
++    });
++  }
++
++  async function loadYtResearch() {
++    bindYtResearch();
++    const msg = document.getElementById("ytr-msg");
++    try {
++      const res = await fetch("/api/yt-research/status");
++      const data = await res.json().catch(() => ({}));
++      ytrReady = res.ok && data.enabled;
++      if (msg) {
++        msg.hidden = ytrReady;
++        msg.textContent = ytrReady ? "" : (data.error || "유튜브 리서치는 꺼져 있습니다.");
++      }
++      ["ytr-search-btn", "ytr-channel-btn"].forEach((id) => {
++        const button = document.getElementById(id);
++        if (button) button.disabled = !ytrReady;
++      });
++    } catch (_err) {
++      ytrReady = false;
++      if (msg) {
++        msg.hidden = false;
++        msg.textContent = "유튜브 리서치를 불러오지 못했습니다.";
++      }
++    }
++  }
++
+   /* ---------- 트렌드 (관리자 미리보기) ---------- */
+   let trendsData = null;
+   let trendsCat = "all";
+--- a/public/styles.css	2026-11-12 07:00:13.458683792 +0000
++++ b/public/styles.css	2026-11-12 07:01:27.774998085 +0000
+@@ -2481,3 +2481,20 @@
+ .trends-chip.static { cursor: default; font-size: 12px; padding: 4px 10px; }
+ .trends-chip.new { border-color: #E5484D; color: #E5484D; }
+ .trend-video .tv-kw { font-size: 11px; color: var(--accent); }
++
++.ytr-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; margin-bottom: 8px; }
++.ytr-form label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); min-width: 0; }
++.ytr-form input, .ytr-form select, .ytr-form textarea {
++  font: inherit; color: var(--text); background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
++}
++.ytr-form textarea { width: min(100%, 520px); min-height: 72px; }
++.ytr-form .btn { width: auto; min-width: 88px; }
++.ytr-compare { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
++.ytr-card .ytr-score { color: #E5484D; font-weight: 700; }
++.ytr-outliers { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
++.ytr-outlier { border-top: 1px solid var(--line); padding-top: 8px; font-size: 13px; }
++@media (max-width: 800px) {
++  .ytr-form { flex-direction: column; align-items: stretch; }
++  .ytr-form textarea, .ytr-form .btn { width: 100%; }
++  .ytr-compare, #view-yt-research .trends-videos { grid-template-columns: 1fr; }
++}
