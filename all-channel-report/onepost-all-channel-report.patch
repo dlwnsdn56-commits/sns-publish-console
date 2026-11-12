@@ -1,0 +1,757 @@
+diff -u -r -N a/public/app.js b/public/app.js
+--- a/public/app.js	2026-11-12 10:21:56.402384177 +0000
++++ b/public/app.js	2026-11-12 10:21:56.406384159 +0000
+@@ -4469,25 +4469,59 @@
+       grid.hidden = false;
+       grid.classList.remove("hidden");
+       grid.innerHTML = stores
+-        .map((g) => {
+-          const change = g.compared
+-            ? `${esc(data.periodLabel)} 조회수 ${insDelta(g.viewsDelta) || "변화 없음"} · 구독자·팔로워 ${insDelta(g.followersDelta) || "변화 없음"}`
+-            : `기록 시작: ${esc(data.startedOnLabel || "")} · 비교 데이터 쌓이는 중`;
+-          const items = g.items.slice().sort((x, y) => (platOrder[x.platform] ?? 9) - (platOrder[y.platform] ?? 9));
+-          return (
+-            `<div class="insights-group insights-store">` +
+-            `<div class="insights-store-head"><div><h3>${esc(g.name)}${showEmail ? `<small>${esc(g.email)}</small>` : ""}</h3>` +
+-            `<div class="insights-store-change">${change}</div></div>` +
+-            `<div class="insights-store-nums"><div><span>누적 조회수</span><b>${insNum(g.views)}</b></div>` +
+-            `<div><span>구독자·팔로워</span><b>${insNum(g.followers)}</b></div>` +
+-            `<div><span>채널</span><b>${items.length}개</b></div></div></div>` +
+-            `<div class="insights-cards">${items.map((c) => insightCardHtml(c, data.periodLabel)).join("")}</div></div>`
+-          );
+-        })
++        .map((g) => insightSheetHtml(g, data))
+         .join("");
++      grid.querySelectorAll("[data-insight-export]").forEach((button) => {
++        button.addEventListener("click", () => {
++          const sheet = button.closest(".insights-sheet");
++          if (sheet) downloadReport("pdf", sheet);
++        });
++      });
+     }
+   }
+ 
++  function insightSheetHtml(group, data) {
++    const board = window.YtReport
++      ? window.YtReport.buildInsightsSheet({
++          storeName: group.name,
++          periodLabel: data.periodLabel,
++          channels: group.items,
++          mock: !!data.mock,
++        })
++      : null;
++    if (!board) return "";
++    const cards = board.channels.map((channel) => {
++      const maxSpark = Math.max(1, ...channel.spark.map((value) => Number(value) || 0));
++      const stats = channel.stats.length
++        ? `<div class="sns-stats">${channel.stats.map((stat) => `<div class="sns-stat"><span>${esc(stat.label)}</span><b>${insNum(stat.value)}</b></div>`).join("")}</div>`
++        : `<p class="ic-note">${esc(channel.stateLabel)}</p>`;
++      const bars = channel.spark.length
++        ? `<div class="sns-spark">${channel.spark.map((value) => `<div class="sns-spark-col"><em>${esc(ytrBarLabel(value))}</em><i style="height:${Math.max(2, Math.round((Number(value) / maxSpark) * 18))}px"></i></div>`).join("")}</div>`
++        : "";
++      return `<article class="sns-mini-card"><h4><i class="sns-dot" style="background:${esc(channel.color)}"></i>${esc(channel.name)}</h4><p class="ic-note">${channel.handle ? "@" + esc(channel.handle) : esc(channel.stateLabel)}</p>${stats}${bars}</article>`;
++    }).join("");
++    const posts = board.channels.flatMap((channel) => channel.posts.map((post) => Object.assign({ channel: channel.name }, post)))
++      .sort((a, b) => b.views - a.views)
++      .slice(0, 5);
++    const postHtml = posts.length
++      ? `<div class="insights-posts">${posts.map((post) => `<div class="insights-post">${post.thumbnail ? `<img src="${esc(post.thumbnail)}" alt="">` : `<span class="sns-thumb-empty"></span>`}<div><b>${esc(post.title || "제목 없음")}</b><span>${esc(post.channel)} · ${esc(insNum(post.views))}</span></div></div>`).join("")}</div>`
++      : `<p class="ic-note">최근 게시 목록이 없습니다.</p>`;
++    const delta = board.viewsDelta == null ? "이전 기간과 비교할 기록이 없습니다." : `이전 기간 대비 ${board.viewsDelta > 0 ? "+" : ""}${insNum(board.viewsDelta)}`;
++    const bestPost = board.bestPost ? `${board.bestPost.channel} · ${board.bestPost.title || "제목 없음"} · ${insNum(board.bestPost.views)}` : "없음";
++    return `<article class="sns-sheet insights-sheet">
++      <header class="sns-sheet-head"><div class="sns-brand"><div>에테르<small>ETHER</small></div></div><div class="sns-doc"><b>조회수</b><span>${esc(board.periodLabel)}</span></div></header>
++      <div class="sns-title-row"><h3>${esc(board.storeName)}</h3><p>${esc(board.periodLabel)}</p></div>
++      <div class="sns-summary"><b>${esc(board.bestChannel || "확인된 조회 없음")}</b>
++        <p class="ic-note">조회 합계 ${esc(insNum(board.totalViews))} · 가장 큰 채널 ${esc(board.bestChannel || "없음")} · 가장 본 게시 ${esc(bestPost)} · ${delta}${board.mock ? " · 예시 데이터" : ""}</p>
++      </div>
++      <h4 class="sns-h">채널별 조회</h4>
++      <div class="sns-all">${cards}</div>
++      <h4 class="sns-h">많이 본 게시</h4>
++      ${postHtml}
++      <p><button type="button" class="btn" data-insight-export="pdf">한 장 보고서</button></p>
++    </article>`;
++  }
++
+   document.querySelectorAll(".period-btn").forEach((btn) => {
+     btn.addEventListener("click", () => {
+       insightPeriod = btn.getAttribute("data-period");
+@@ -4759,7 +4793,17 @@
+   }
+ 
+   function reportSource() {
+-    if (ytrReportChannel && !ytrReportChannel.error) return { youtube: ytrReportChannel, instagram: readInstagramInputs() };
++    if (ytrReportChannel && !ytrReportChannel.error) {
++      return {
++        mode: "research",
++        youtube: ytrReportChannel,
++        manual: readManualInputs(),
++        instagram: readInstagramInputs(),
++        analysisChannels: (lastAnalysis && lastAnalysis.channels) || [],
++        brandName: ytrReportChannel.title,
++        mock: false,
++      };
++    }
+     const channels = (lastAnalysis && lastAnalysis.channels) || [];
+     const yt = channels.find((item) => /youtube|유튜브/i.test(String(item.channelId || "") + " " + String(item.label || "") + " " + String(item.channelName || "")));
+     const ig = channels.find((item) => /instagram|인스타/i.test(String(item.channelId || "") + " " + String(item.label || "") + " " + String(item.channelName || "")));
+@@ -4774,6 +4818,11 @@
+           handle: (ig.account && (ig.account.displayName || ig.account.id)) || "",
+         } : {};
+     return {
++      mode: "store",
++      mock: !!(lastAnalysis && lastAnalysis.mock),
++      manual: readManualInputs(),
++      analysisChannels: channels,
++      brandName: (lastAnalysis && (lastAnalysis.storeName || lastAnalysis.name)) || "",
+       youtube: yt ? {
+         title: yt.label || yt.channelName || "유튜브",
+         handle: (yt.account && (yt.account.displayName || "")) || "",
+@@ -4781,11 +4830,10 @@
+         subscriberHidden: false,
+         videoCount: analysisMetric(yt, /영상 수|videoCount|videos/i),
+         views: analysisMetric(yt, /조회|view/i),
+-        recentVideos: [],
++        recentVideos: Array.isArray(yt.recentPosts) ? yt.recentPosts : [],
+         outliers: [],
+       } : null,
+       instagram,
+-      brandName: (lastAnalysis && lastAnalysis.storeName) || "",
+     };
+   }
+ 
+@@ -4805,6 +4853,26 @@
+     };
+   }
+ 
++  function readManualInputs() {
++    const manual = {};
++    document.querySelectorAll("[data-manual-channel]").forEach((row) => {
++      const id = row.getAttribute("data-manual-channel");
++      const num = (name) => {
++        const input = row.querySelector('[data-field="' + name + '"]');
++        if (!input || String(input.value).trim() === "") return null;
++        const value = Number(input.value);
++        return Number.isFinite(value) ? value : null;
++      };
++      manual[id] = {
++        handle: (row.querySelector("[data-field=handle]") && row.querySelector("[data-field=handle]").value) || "",
++        followers: num("followers"),
++        posts: num("posts"),
++        views: num("views"),
++      };
++    });
++    return manual;
++  }
++
+   function ytrBarLabel(value) {
+     const n = Number(value);
+     if (!Number.isFinite(n)) return "";
+@@ -4824,21 +4892,22 @@
+     const status = document.getElementById("sns-report-status");
+     if (!sheet || !window.YtReport) return;
+     const report = window.YtReport.buildReport(Object.assign({ now: new Date() }, reportSource()));
+-    const maxBar = Math.max(1, ...report.bars.map((item) => item.views || 0));
+-    const yt = report.youtube;
+-    const ig = report.instagram;
+-    const igCard = ig.connected
+-      ? `<div class="sns-stats">
+-          <div class="sns-stat"><span>게시물</span><b>${snsNum(ig.posts)}</b></div>
+-          <div class="sns-stat"><span>팔로워</span><b>${snsNum(ig.followers)}</b></div>
+-          <div class="sns-stat"><span>팔로잉</span><b>${snsNum(ig.following)}</b></div>
+-          <div class="sns-stat"><span>확인한 반응</span><b>${snsNum(ig.reactions)}</b></div>
+-        </div>`
+-      : `<p class="ic-note">연결 안 됨. 위 칸에 직접 입력한 숫자만 들어갑니다.</p>`;
+-    const bars = report.bars.length
+-      ? `<div class="sns-bars">${report.bars.map((item) => `<div class="sns-bar" title="${esc(item.title)}"><em>${esc(ytrBarLabel(item.views))}</em><i style="height:${Math.max(4, Math.round(((item.views || 0) / maxBar) * 46))}px"></i></div>`).join("")}</div>
+-        <div class="sns-thumbs">${report.bars.map((item) => item.thumbnail ? `<span><img src="${esc(item.thumbnail)}" alt=""></span>` : `<span class="sns-thumb-empty"></span>`).join("")}</div>`
+-      : `<p class="ic-note">최근 영상 목록이 없습니다.</p>`;
++    const cards = (report.channels || []).map((channel) => {
++      const maxSpark = Math.max(1, ...channel.spark.map((value) => value || 0));
++      const stats = channel.stats.length
++        ? `<div class="sns-stats">${channel.stats.map((stat) => `<div class="sns-stat"><span>${esc(stat.label)}</span><b>${snsNum(stat.value)}</b></div>`).join("")}</div>`
++        : `<p class="ic-note">${esc(channel.stateLabel)}</p>`;
++      const spark = channel.spark.length
++        ? `<div class="sns-spark">${channel.spark.map((value) => `<div class="sns-spark-col"><em>${esc(ytrBarLabel(value))}</em><i style="height:${Math.max(2, Math.round((value / maxSpark) * 18))}px"></i></div>`).join("")}</div>`
++        : "";
++      return `<article class="sns-mini-card">
++        <h4><i class="sns-dot" style="background:${esc(channel.color)}"></i>${esc(channel.name)}</h4>
++        <p class="ic-note">${channel.handle ? "@" + esc(channel.handle) : esc(channel.stateLabel)}</p>
++        ${stats}
++        ${spark}
++      </article>`;
++    }).join("");
++    const totals = report.totals || {};
+     sheet.innerHTML = `
+       <header class="sns-sheet-head">
+         <div class="sns-brand"><div>에테르<small>ETHER</small></div></div>
+@@ -4846,21 +4915,11 @@
+       </header>
+       <div class="sns-title-row"><h3>${esc(report.brand)}</h3><p>${esc(report.dateText)}<br>${esc(report.author)}</p></div>
+       <p class="sns-subline">${esc(report.subline)}</p>
+-      <div class="sns-summary"><b class="sns-edit" contenteditable="true">${esc(report.summaryBold)}</b> <span class="sns-edit" contenteditable="true">${esc(report.summary)}</span></div>
+-      <h4 class="sns-h">채널 현황 TODAY</h4>
+-      <div class="sns-cards">
+-        <article class="sns-card"><h4>유튜브</h4>
+-          ${yt.connected ? `<div class="sns-stats">
+-            <div class="sns-stat"><span>구독자</span><b>${snsNum(yt.subscribers, yt.subscriberHidden)}</b></div>
+-            <div class="sns-stat"><span>영상</span><b>${snsNum(yt.videos)}</b></div>
+-            <div class="sns-stat"><span>총 조회</span><b>${snsNum(yt.views)}</b></div>
+-            <div class="sns-stat"><span>편당 평균</span><b>${snsNum(yt.average)}</b></div>
+-          </div>` : `<p class="ic-note">조회된 유튜브 숫자가 없습니다.</p>`}
+-          <ul class="sns-notes">${report.observations.map((line) => `<li>${esc(line)}</li>`).join("")}</ul>
+-          ${bars}
+-        </article>
+-        <article class="sns-card"><h4>인스타그램</h4>${igCard}</article>
++      <div class="sns-summary"><b class="sns-edit" contenteditable="true">${esc(report.summaryBold)}</b> <span class="sns-edit" contenteditable="true">${esc(report.summary)}</span>
++        <p class="ic-note">팔로워 합계 ${esc(snsNum(totals.followers))} · 게시 합계 ${esc(snsNum(totals.posts))} · 조회 합계 ${esc(snsNum(totals.views))} · 가장 큰 채널 ${esc(totals.best || "없음")}${report.mock ? " · 예시 데이터" : ""}</p>
+       </div>
++      <h4 class="sns-h">채널 현황 TODAY</h4>
++      <div class="sns-all">${cards}</div>
+       <h4 class="sns-h">이미 갖고 계신 강점 STRENGTHS</h4>
+       <div class="sns-strengths">${report.strengths.map((item) => `<article class="sns-mini"><b class="sns-edit" contenteditable="true">${esc(item.title)}</b><p class="sns-edit" contenteditable="true">${esc(item.body)}</p></article>`).join("")}</div>
+       <h4 class="sns-h">추정 진단 DIAGNOSIS</h4>
+@@ -4871,7 +4930,7 @@
+       <p class="hint">원포스트 동시 배포 채널</p>
+       <div class="sns-chips">${report.distribute.map((name) => `<span>${esc(name)}</span>`).join("")}</div>
+       <footer class="sns-foot"><p>에테르 대표 이준우<br>E ether@1post.kr<br>W https://1post.kr</p><p>${esc(report.footerNote)}</p></footer>`;
+-    if (status) status.textContent = ig.connected ? "인스타 숫자는 입력값 또는 연결된 값만 표시합니다." : "인스타그램은 연결 안 됨입니다. 숫자를 지어 넣지 않았습니다.";
++    if (status) status.textContent = report.mock ? "예시 데이터입니다. 실제 채널 숫자가 아닙니다." : "확인된 숫자만 표시합니다. 없는 채널은 연결 안 됨 또는 데이터 없음입니다.";
+     fitReportScale();
+   }
+ 
+@@ -4879,6 +4938,13 @@
+     const frame = document.getElementById("sns-report-frame");
+     const sheet = document.getElementById("sns-report-sheet");
+     if (!frame || !sheet) return;
++    if (window.innerWidth <= 800) {
++      sheet.style.transform = "";
++      sheet.style.width = "100%";
++      frame.style.height = "";
++      return;
++    }
++    sheet.style.width = "794px";
+     const scale = Math.min(1, (frame.clientWidth - 24) / 794);
+     sheet.style.transform = scale < 1 ? "scale(" + scale + ")" : "";
+     sheet.style.transformOrigin = "top left";
+@@ -4921,8 +4987,10 @@
+     return out;
+   }
+ 
+-  async function rasterizeSheet() {
+-    const sheet = document.getElementById("sns-report-sheet");
++  async function rasterizeSheet(target) {
++    const sheet = target || document.getElementById("sns-report-sheet");
++    const button = sheet && sheet.querySelector("[data-insight-export]");
++    if (button) button.hidden = true;
+     const width = 794;
+     const height = Math.max(1123, sheet.scrollHeight);
+     const xml = new XMLSerializer().serializeToString(sheet);
+@@ -4938,6 +5006,7 @@
+       canvas.getContext("2d").drawImage(image, 0, 0);
+       return canvas;
+     } finally {
++      if (button) button.hidden = false;
+       URL.revokeObjectURL(url);
+     }
+   }
+@@ -4951,10 +5020,10 @@
+     setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+   }
+ 
+-  async function downloadReport(kind) {
+-    const status = document.getElementById("sns-report-status");
++  async function downloadReport(kind, target) {
++    const status = document.getElementById("sns-report-status") || document.getElementById("insights-status");
+     try {
+-      const canvas = await rasterizeSheet();
++      const canvas = await rasterizeSheet(target);
+       const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.9));
+       const bytes = new Uint8Array(await blob.arrayBuffer());
+       if (kind === "png") {
+diff -u -r -N a/public/index.html b/public/index.html
+--- a/public/index.html	2026-11-12 10:21:56.402384177 +0000
++++ b/public/index.html	2026-11-12 10:21:56.406384159 +0000
+@@ -766,6 +766,7 @@
+           <div class="insights-total-row" id="insights-total-row"></div>
+         </div>
+         <div id="insights-grid" class="insights-grid hidden" hidden></div>
++        <p class="insights-export"><button type="button" class="btn" id="insights-report-btn">한 장 보고서</button></p>
+       </section>
+ 
+       <section id="view-analysis" class="hidden">
+@@ -845,6 +846,14 @@
+           <label>팔로잉 <input id="sns-ig-following" type="number" min="0" step="1" /></label>
+           <label>확인한 반응 <input id="sns-ig-reactions" type="number" min="0" step="1" /></label>
+           <label>인스타 아이디 <input id="sns-ig-handle" type="text" maxlength="40" placeholder="@ 없이" /></label>
++          <details>
++            <summary>다른 채널 숫자 직접 입력</summary>
++            <div class="ytr-manual" data-manual-channel="facebook"><b>페이스북</b><input data-field="handle" placeholder="아이디"><input data-field="followers" type="number" placeholder="팔로워"><input data-field="posts" type="number" placeholder="게시"><input data-field="views" type="number" placeholder="조회"></div>
++            <div class="ytr-manual" data-manual-channel="threads"><b>스레드</b><input data-field="handle" placeholder="아이디"><input data-field="followers" type="number" placeholder="팔로워"><input data-field="posts" type="number" placeholder="게시"><input data-field="views" type="number" placeholder="조회"></div>
++            <div class="ytr-manual" data-manual-channel="tiktok"><b>틱톡</b><input data-field="handle" placeholder="아이디"><input data-field="followers" type="number" placeholder="팔로워"><input data-field="posts" type="number" placeholder="게시"><input data-field="views" type="number" placeholder="조회"></div>
++            <div class="ytr-manual" data-manual-channel="x"><b>X</b><input data-field="handle" placeholder="아이디"><input data-field="followers" type="number" placeholder="팔로워"><input data-field="posts" type="number" placeholder="게시"><input data-field="views" type="number" placeholder="조회"></div>
++            <div class="ytr-manual" data-manual-channel="naver-clip"><b>네이버 클립</b><input data-field="handle" placeholder="아이디"><input data-field="followers" type="number" placeholder="팔로워"><input data-field="posts" type="number" placeholder="클립"><input data-field="views" type="number" placeholder="조회"></div>
++          </details>
+           <button type="button" class="btn" id="sns-report-apply">입력 반영</button>
+           <button type="button" class="btn primary" id="sns-report-png">PNG 저장</button>
+           <button type="button" class="btn primary" id="sns-report-pdf">PDF 저장</button>
+diff -u -r -N a/public/styles.css b/public/styles.css
+--- a/public/styles.css	2026-11-12 10:21:56.402384177 +0000
++++ b/public/styles.css	2026-11-12 10:21:56.406384159 +0000
+@@ -2506,6 +2506,9 @@
+   .ytr-compare, #view-yt-research .trends-videos { grid-template-columns: 1fr; }
+ }
+ 
++.ytr-manual { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0; }
++.ytr-manual b { width: 88px; font-size: 12px; }
++.ytr-manual input { width: 96px; font: inherit; border: 1px solid var(--line); border-radius: 8px; padding: 6px; }
+ .sns-report-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; margin-bottom: 10px; }
+ .sns-report-tools label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+ .sns-report-tools input { font: inherit; border: 1px solid var(--line); border-radius: 8px; padding: 8px; width: 120px; }
+@@ -2529,7 +2532,22 @@
+ .sns-summary { background: #e8f1ff; border: 1px solid #b9d0f5; border-radius: 12px; padding: 12px 14px; font-size: 14px; line-height: 1.55; }
+ .sns-summary b { color: #0b3fa8; }
+ .sns-h { margin: 16px 0 8px; font-size: 14px; letter-spacing: 0.04em; color: #0b3fa8; }
+-.sns-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
++.sns-cards, .sns-all { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
++.sns-mini-card { border: 1px solid #c9daf6; background: #f7faff; border-radius: 10px; padding: 6px 8px; min-width: 0; }
++.sns-mini-card h4 { margin: 0; font-size: 12px; display: flex; gap: 6px; align-items: center; }
++.sns-dot { width: 8px; height: 8px; border-radius: 99px; display: inline-block; }
++.sns-mini-card .sns-stats { gap: 4px; }
++.sns-mini-card .sns-stat { padding: 3px 5px; }
++.sns-mini-card .sns-stat b { font-size: 13px; }
++.insights-sheet { width: 100%; max-width: 794px; min-height: 0; margin: 0 0 18px; }
++.insights-posts { display: flex; flex-direction: column; gap: 6px; }
++.insights-post { display: flex; gap: 8px; align-items: center; font-size: 12px; }
++.insights-post img, .insights-post .sns-thumb-empty { width: 42px; height: 28px; object-fit: cover; border-radius: 4px; background: #d9e4f5; }
++.insights-post b { display: block; }
++.sns-spark { display: flex; align-items: flex-end; gap: 2px; height: 36px; margin-top: 4px; }
++.sns-spark-col { flex: 1; min-width: 0; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; }
++.sns-spark-col em { font-style: normal; font-size: 8px; line-height: 1; color: #344054; margin-bottom: 1px; }
++.sns-spark-col i { display: block; width: 70%; background: #0b3fa8; border-radius: 2px 2px 0 0; }
+ .sns-card, .sns-mini, .sns-next { border: 1px solid #c9daf6; background: #f7faff; border-radius: 12px; padding: 10px; }
+ .sns-card h4 { margin: 0 0 8px; font-size: 14px; }
+ .sns-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+@@ -2557,5 +2575,8 @@
+ .sns-edit { outline: none; }
+ @media (max-width: 860px) {
+   .sns-report-tools input, .sns-report-tools .btn { width: 100%; }
+-  .sns-sheet { width: 794px; }
++  .sns-sheet { width: 100%; min-height: 0; padding: 16px 16px 0; }
++  .sns-all, .sns-cards { grid-template-columns: 1fr 1fr; }
++  .sns-strengths, .sns-nexts { grid-template-columns: 1fr 1fr; }
++  .sns-foot { margin-left: -16px; margin-right: -16px; flex-direction: column; }
+ }
+diff -u -r -N a/public/yt-report.js b/public/yt-report.js
+--- a/public/yt-report.js	2026-11-12 10:21:56.402384177 +0000
++++ b/public/yt-report.js	2026-11-12 10:21:56.406384159 +0000
+@@ -9,6 +9,21 @@
+     { label: "썰", count: 3 },
+   ];
+   const DISTRIBUTE = ["유튜브", "인스타그램", "페이스북", "스레드", "틱톡", "X", "네이버 클립"];
++  const CHANNELS = [
++    { id: "youtube", name: "유튜브", color: "#FF0033" },
++    { id: "instagram", name: "인스타그램", color: "#E1306C" },
++    { id: "facebook", name: "페이스북", color: "#1877F2" },
++    { id: "threads", name: "스레드", color: "#111111" },
++    { id: "tiktok", name: "틱톡", color: "#111111" },
++    { id: "x", name: "X", color: "#111111" },
++    { id: "naver-clip", name: "네이버 클립", color: "#03C75A" },
++  ];
++  const STAT_DEFS = [
++    { id: "followers", label: "팔로워", re: /구독자|팔로워|follower|subscriber/i },
++    { id: "posts", label: "게시", re: /영상 수|게시물|게시 수|클립 수|videoCount|media_count|^posts$/i },
++    { id: "views", label: "조회", re: /총 조회|조회수|viewCount|^views$/i },
++    { id: "reactions", label: "반응", re: /반응|좋아요|likeCount|reaction/i },
++  ];
+ 
+   function finite(value) {
+     return typeof value === "number" && Number.isFinite(value);
+@@ -97,6 +112,132 @@
+     return finite(channel.recentAverageViews) ? channel.recentAverageViews : null;
+   }
+ 
++  function matchChannelId(raw) {
++    const text = String(raw || "").toLowerCase();
++    if (/youtube|유튜브/.test(text) && !/community/.test(text)) return "youtube";
++    if (/instagram|인스타/.test(text)) return "instagram";
++    if (/facebook|페이스북/.test(text)) return "facebook";
++    if (/threads|스레드/.test(text)) return "threads";
++    if (/tiktok|틱톡/.test(text)) return "tiktok";
++    if (/(^|[^a-z])x([^a-z]|$)|twitter|트위터/.test(text)) return "x";
++    if (/naver-clip|naver_clip|네이버 클립|클립/.test(text) && !/blog/.test(text)) return "naver-clip";
++    return "";
++  }
++
++  function statsFromMetrics(metrics) {
++    const used = {};
++    const stats = [];
++    (metrics || []).forEach((metric) => {
++      if (!metric || metric.state !== "available" || !finite(Number(metric.value))) return;
++      const blob = String(metric.key || "") + " " + String(metric.label || "");
++      if (/videoCount/i.test(blob) && /viewCount/i.test(String(metric.key || ""))) return;
++      const def = STAT_DEFS.find((item) => !used[item.id] && item.re.test(blob) && !(item.id === "views" && /videoCount/i.test(blob)));
++      if (!def) return;
++      used[def.id] = true;
++      const value = Number(metric.value);
++      const previous = finite(Number(metric.previousValue)) ? Number(metric.previousValue) : null;
++      stats.push({ id: def.id, label: metric.label || def.label, value, previous });
++    });
++    return stats;
++  }
++
++  function statsFromManual(manual) {
++    if (!manual || typeof manual !== "object") return [];
++    const map = [
++      ["followers", "팔로워", manual.followers != null ? manual.followers : manual.subscribers],
++      ["posts", "게시", manual.posts != null ? manual.posts : manual.videos],
++      ["views", "조회", manual.views],
++      ["reactions", "반응", manual.reactions],
++    ];
++    return map.filter((item) => finite(item[2])).map((item) => ({ id: item[0], label: item[1], value: item[2], previous: null }));
++  }
++
++  function statsFromYoutube(channel) {
++    if (!channel) return [];
++    const stats = [];
++    if (!channel.subscriberHidden && finite(channel.subscribers)) stats.push({ id: "followers", label: "구독자", value: channel.subscribers, previous: null });
++    if (finite(channel.videoCount)) stats.push({ id: "posts", label: "영상", value: channel.videoCount, previous: null });
++    if (finite(channel.views)) stats.push({ id: "views", label: "총 조회", value: channel.views, previous: null });
++    const average = avgPerVideo(channel);
++    if (finite(average)) stats.push({ id: "average", label: "편당 평균", value: average, previous: null });
++    return stats;
++  }
++
++  function sparkFrom(stats, videos) {
++    const series = (videos || []).map((item) => item && item.viewCount).filter(finite).slice(0, 8);
++    if (series.length >= 2) return series;
++    const pair = (stats || []).find((item) => item.previous != null && finite(item.value));
++    if (pair) return [pair.previous, pair.value];
++    return [];
++  }
++
++  function blankChannel(meta) {
++    return {
++      id: meta.id,
++      name: meta.name,
++      color: meta.color,
++      handle: "",
++      state: "disconnected",
++      stateLabel: "연결 안 됨",
++      stats: [],
++      spark: [],
++    };
++  }
++
++  function buildChannels(input) {
++    const manual = (input && input.manual) || {};
++    const analysis = (input && input.analysisChannels) || [];
++    const byId = {};
++    analysis.forEach((item) => {
++      const id = matchChannelId(item.channelId || item.id || item.label || item.channelName);
++      if (id && !byId[id]) byId[id] = item;
++    });
++    return CHANNELS.map((meta) => {
++      const card = blankChannel(meta);
++      const found = byId[meta.id];
++      const fromMetrics = statsFromMetrics(found && found.metrics);
++      const fromManual = statsFromManual(manual[meta.id] || (meta.id === "instagram" ? input.instagram : null));
++      const fromYoutube = meta.id === "youtube" ? statsFromYoutube(input.youtube) : [];
++      const stats = [];
++      const seen = {};
++      fromYoutube.concat(fromMetrics, fromManual).forEach((item) => {
++        if (seen[item.id]) return;
++        seen[item.id] = true;
++        stats.push(item);
++      });
++      const account = found && found.account;
++      const handle = String(
++        (manual[meta.id] && manual[meta.id].handle) ||
++        (meta.id === "youtube" && input.youtube && input.youtube.handle) ||
++        (account && (account.displayName || account.id)) ||
++        ""
++      ).replace(/^@/, "");
++      const disconnected = found ? (found.connection && (found.connection.code === "not_connected" || found.connection.code === "no_account")) : !input.youtube || meta.id !== "youtube";
++      const youtubePresent = meta.id === "youtube" && input.youtube && !input.youtube.error;
++      if (stats.length) {
++        card.state = "ok";
++        card.stateLabel = "확인된 값";
++      } else if (youtubePresent || (found && !disconnected) || handle) {
++        card.state = "nodata";
++        card.stateLabel = "데이터 없음";
++      }
++      card.handle = handle;
++      card.stats = stats.slice(0, 4);
++      const videos = meta.id === "youtube" && input.youtube ? recentList(input.youtube) : (found && found.recentPosts) || [];
++      card.spark = sparkFrom(card.stats, videos);
++      return card;
++    });
++  }
++
++  function sumStat(channels, id) {
++    const values = channels.map((channel) => {
++      const stat = channel.stats.find((item) => item.id === id);
++      return stat ? stat.value : null;
++    }).filter(finite);
++    if (!values.length) return null;
++    return values.reduce((sum, value) => sum + value, 0);
++  }
++
+   function buildReport(input) {
+     const source = input || {};
+     const now = source.now instanceof Date ? source.now : new Date();
+@@ -177,9 +318,27 @@
+       { title: "같이 올리기", body: "원포스트에 연결된 채널이 있으면 같은 영상을 그 채널에도 올립니다. 연결되지 않은 채널 숫자는 적지 않습니다." },
+     ];
+ 
+-    const platforms = [];
+-    if (channel) platforms.push("유튜브");
+-    if (instagram.connected || instagram.handle) platforms.push("인스타그램");
++    const channels = buildChannels(source);
++    const followersTotal = sumStat(channels, "followers");
++    const postsTotal = sumStat(channels, "posts");
++    const viewsTotal = sumStat(channels, "views");
++    const ranked = channels.filter((item) => item.stats.some((stat) => stat.id === "followers" || stat.id === "views"));
++    const best = ranked.slice().sort((a, b) => {
++      const pick = (card, id) => {
++        const stat = card.stats.find((item) => item.id === id);
++        return stat ? stat.value : -1;
++      };
++      return (pick(b, "followers") - pick(a, "followers")) || (pick(b, "views") - pick(a, "views"));
++    })[0] || null;
++    const withData = channels.filter((item) => item.state === "ok").length;
++    if (best && withData > 1) {
++      summaryBold = best.name;
++      summary = "확인된 숫자만 더하면 " + best.name + "이 가장 큽니다. 숫자 없는 채널은 합계에 넣지 않았습니다.";
++    } else if (withData === 0) {
++      summaryBold = "확인된 숫자가 없습니다";
++      summary = "연결되지 않았거나 스냅샷이 없는 채널은 비워 두었습니다.";
++    }
++    const platforms = channels.filter((item) => item.state !== "disconnected").map((item) => item.name);
+ 
+     return {
+       docNo: docNo(channel, now),
+@@ -187,7 +346,7 @@
+       handle,
+       dateText,
+       author: "에테르 대표 이준우",
+-      subline: (platforms.join("·") || "유튜브") + (handle ? " @" + handle : "") + " | 조사일 " + dateText + " 공개 채널 기준",
++      subline: (platforms.length > 3 ? platforms.length + "개 채널" : (platforms.join("·") || "채널")) + " | 조사일 " + dateText + " 공개 채널 기준",
+       summary,
+       summaryBold,
+       youtube: channel ? {
+@@ -199,6 +358,8 @@
+         average,
+       } : { connected: false },
+       instagram,
++      channels,
++      totals: { followers: followersTotal, posts: postsTotal, views: viewsTotal, best: best ? best.name : "" },
+       observations,
+       bars,
+       strengths,
+@@ -206,9 +367,105 @@
+       next,
+       plan: PLAN,
+       distribute: DISTRIBUTE,
++      mock: !!source.mock,
+       footerNote: "본 자료는 " + dateText + " 공개 채널 기준의 현황 분석입니다. 조회수나 성과를 보장하지 않습니다.",
+     };
+   }
+ 
+-  return { buildReport, readInstagram, DISTRIBUTE, PLAN };
++  const INSIGHT_IDS = {
++    youtube: "youtube",
++    instagram: "instagram",
++    facebook: "facebook",
++    threads: "threads",
++    tiktok: "tiktok",
++    x: "x",
++    twitter: "x",
++    "naver-clip": "naver-clip",
++    naver_clip: "naver-clip",
++  };
++
++  function buildInsightsSheet(input) {
++    const source = input || {};
++    const rows = Array.isArray(source.channels) ? source.channels : [];
++    const grouped = {};
++    rows.forEach((row) => {
++      const id = INSIGHT_IDS[String(row && row.platform || "").toLowerCase()];
++      if (!id) return;
++      if (!grouped[id]) grouped[id] = [];
++      grouped[id].push(row);
++    });
++    const finiteList = (list) => list.map(Number).filter((value) => Number.isFinite(value));
++    const sum = (list) => {
++      const values = finiteList(list);
++      return values.length ? values.reduce((total, value) => total + value, 0) : null;
++    };
++    const channels = CHANNELS.map((meta) => {
++      const items = grouped[meta.id] || [];
++      if (!items.length) {
++        return { id: meta.id, name: meta.name, color: meta.color, handle: "", state: "disconnected", stateLabel: "연결 안 됨", stats: [], spark: [], posts: [] };
++      }
++      const views = sum(items.map((item) => item.views));
++      const followers = sum(items.map((item) => item.followers));
++      const posts = sum(items.map((item) => item.videos));
++      const likes = sum(items.map((item) => item.likes));
++      const compared = items.filter((item) => item.viewsDelta != null && Number.isFinite(Number(item.viewsDelta)) && !item.waiting);
++      const viewsDelta = compared.length ? sum(compared.map((item) => item.viewsDelta)) : null;
++      const stats = [];
++      if (views != null) stats.push({ id: "views", label: "조회", value: views });
++      if (followers != null) stats.push({ id: "followers", label: meta.id === "youtube" ? "구독자" : "팔로워", value: followers });
++      if (posts != null) stats.push({ id: "posts", label: "게시", value: posts });
++      if (likes != null) stats.push({ id: "reactions", label: "반응", value: likes });
++      const recent = [];
++      items.forEach((item) => {
++        (item.recentPosts || item.posts || []).forEach((post) => {
++          if (!post || !Number.isFinite(Number(post.views))) return;
++          recent.push({
++            title: String(post.title || ""),
++            views: Number(post.views),
++            thumbnail: post.thumbnail || (post.videoId ? "https://i.ytimg.com/vi/" + post.videoId + "/mqdefault.jpg" : ""),
++          });
++        });
++      });
++      recent.sort((a, b) => b.views - a.views);
++      let spark = recent.slice(0, 8).map((post) => post.views);
++      if (spark.length < 2 && views != null && viewsDelta != null) spark = [views - viewsDelta, views];
++      const handle = String((items[0] && items[0].account) || "").replace(/^@/, "");
++      const waiting = items.every((item) => item.waiting);
++      return {
++        id: meta.id,
++        name: meta.name,
++        color: meta.color,
++        handle,
++        state: stats.length && !waiting ? "ok" : "nodata",
++        stateLabel: waiting ? (items[0].waitingText || "데이터 없음") : "데이터 없음",
++        stats: stats.slice(0, 4),
++        spark,
++        viewsDelta,
++        posts: recent.slice(0, 3),
++      };
++    });
++    const totalViews = sum(channels.map((channel) => {
++      const stat = channel.stats.find((item) => item.id === "views");
++      return stat ? stat.value : null;
++    }));
++    const deltaRows = channels.filter((channel) => channel.viewsDelta != null);
++    const viewsDelta = deltaRows.length ? deltaRows.reduce((total, channel) => total + channel.viewsDelta, 0) : null;
++    const best = channels.filter((channel) => channel.stats.some((stat) => stat.id === "views"))
++      .slice()
++      .sort((a, b) => b.stats.find((stat) => stat.id === "views").value - a.stats.find((stat) => stat.id === "views").value)[0] || null;
++    const bestPost = channels.flatMap((channel) => channel.posts.map((post) => Object.assign({ channel: channel.name }, post)))
++      .sort((a, b) => b.views - a.views)[0] || null;
++    return {
++      mock: !!source.mock,
++      storeName: String(source.storeName || "가게"),
++      periodLabel: String(source.periodLabel || ""),
++      channels,
++      totalViews,
++      viewsDelta,
++      bestChannel: best ? best.name : "",
++      bestPost,
++    };
++  }
++
++  return { buildReport, buildInsightsSheet, readInstagram, CHANNELS, DISTRIBUTE, PLAN };
+ });
+diff -u -r -N a/test/all-channel-report.test.js b/test/all-channel-report.test.js
+--- a/test/all-channel-report.test.js	1970-01-01 00:00:00.000000000 +0000
++++ b/test/all-channel-report.test.js	2026-11-12 10:21:56.406384159 +0000
+@@ -0,0 +1,95 @@
++const test = require("node:test");
++const assert = require("node:assert/strict");
++const { buildReport, buildInsightsSheet } = require("../public/yt-report");
++
++function metric(key, label, value) {
++  return { key, label, value, state: "available", previousValue: null };
++}
++
++test("store report lists seven channels and does not invent missing numbers", () => {
++  const report = buildReport({
++    mode: "store",
++    brandName: "테스트 가게",
++    now: new Date("2026-11-12T03:00:00.000Z"),
++    analysisChannels: [
++      {
++        channelId: "youtube",
++        label: "유튜브",
++        account: { displayName: "kitchen" },
++        connection: { code: "connected" },
++        metrics: [metric("subscribers", "구독자", 1500), metric("views", "조회수", 120000), metric("videoCount", "영상 수", 34)],
++      },
++      {
++        channelId: "instagram",
++        label: "인스타그램",
++        connection: { code: "connected" },
++        metrics: [metric("followers", "팔로워", 340)],
++      },
++    ],
++  });
++  assert.equal(report.channels.length, 7);
++  assert.equal(report.channels.some((item) => item.id === "blogger" || item.name.includes("블로그")), false);
++  const facebook = report.channels.find((item) => item.id === "facebook");
++  assert.equal(facebook.state, "disconnected");
++  assert.equal(facebook.stats.length, 0);
++  assert.equal(report.totals.followers, 1500 + 340);
++  assert.equal(report.totals.views, 120000);
++  assert.equal(report.totals.best, "유튜브");
++  assert.equal(JSON.stringify(facebook).includes("999"), false);
++});
++
++test("manual input fills only that channel", () => {
++  const report = buildReport({
++    youtube: { title: "테스트키친", handle: "testkitchen", subscribers: 10, videoCount: 2, views: 30, recentVideos: [] },
++    manual: { tiktok: { followers: 8, posts: 3, handle: "clip" } },
++    now: new Date("2026-11-12T00:00:00.000Z"),
++  });
++  const tiktok = report.channels.find((item) => item.id === "tiktok");
++  const threads = report.channels.find((item) => item.id === "threads");
++  assert.equal(tiktok.state, "ok");
++  assert.equal(tiktok.stats.find((item) => item.id === "followers").value, 8);
++  assert.equal(threads.state, "disconnected");
++  assert.equal(threads.stats.length, 0);
++  assert.equal(report.channels.find((item) => item.id === "youtube").stats.find((item) => item.id === "followers").value, 10);
++});
++
++test("mock flag is off unless the caller marks the sample", () => {
++  const live = buildReport({ brandName: "가게", now: new Date("2026-11-12T00:00:00.000Z") });
++  assert.equal(live.mock, false);
++  const sample = buildReport({ brandName: "가게", mock: true, now: new Date("2026-11-12T00:00:00.000Z") });
++  assert.equal(sample.mock, true);
++  assert.equal(live.channels.filter((item) => item.state === "ok").length, 0);
++});
++
++test("views sheet keeps only real numbers and all seven channels", () => {
++  const board = buildInsightsSheet({
++    storeName: "테스트 가게",
++    periodLabel: "일간",
++    mock: true,
++    channels: [
++      { platform: "youtube", account: "kitchen", views: 120000, viewsDelta: 1000, followers: 1500, videos: 34, recentPosts: [{ title: "김치", views: 48000, videoId: "jNQXAC9IVRw" }] },
++      { platform: "tiktok", account: "kitchen", views: 50000, followers: 800 },
++      { platform: "blogger", account: "skip", views: 99999 },
++    ],
++  });
++  assert.equal(board.channels.length, 7);
++  assert.equal(board.channels.some((item) => item.name.includes("블로그")), false);
++  assert.equal(board.totalViews, 170000);
++  assert.equal(board.viewsDelta, 1000);
++  assert.equal(board.bestChannel, "유튜브");
++  assert.equal(board.bestPost.title, "김치");
++  assert.equal(board.bestPost.thumbnail.includes("jNQXAC9IVRw"), true);
++  const facebook = board.channels.find((item) => item.id === "facebook");
++  assert.equal(facebook.state, "disconnected");
++  assert.equal(facebook.spark.length, 0);
++  const youtube = board.channels.find((item) => item.id === "youtube");
++  assert.deepEqual(youtube.spark, [119000, 120000]);
++  const many = buildInsightsSheet({
++    channels: [{
++      platform: "youtube",
++      views: 10,
++      recentPosts: [{ title: "a", views: 2 }, { title: "b", views: 8 }, { title: "c", views: 4 }],
++    }],
++  });
++  assert.deepEqual(many.channels.find((item) => item.id === "youtube").spark, [8, 4, 2]);
++});
