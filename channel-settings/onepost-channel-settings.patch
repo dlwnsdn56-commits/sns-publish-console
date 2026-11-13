@@ -1,12 +1,12 @@
 diff -u -r -N a/adapters/youtube.js b/adapters/youtube.js
---- a/adapters/youtube.js	2026-11-13 09:36:08.546821821 +0000
-+++ b/adapters/youtube.js	2026-11-13 09:36:08.546821821 +0000
+--- a/adapters/youtube.js	2026-11-13 09:43:28.140623958 +0000
++++ b/adapters/youtube.js	2026-11-13 09:43:28.140623958 +0000
 @@ -1 +1 @@
 -      containsSyntheticMedia: true,
 +      containsSyntheticMedia: job.youtubeSynthetic === true,
 diff -u -r -N a/lib/channel-defaults.js b/lib/channel-defaults.js
 --- a/lib/channel-defaults.js	1970-01-01 00:00:00.000000000 +0000
-+++ b/lib/channel-defaults.js	2026-11-13 09:36:08.546821821 +0000
++++ b/lib/channel-defaults.js	2026-11-13 09:43:28.140623958 +0000
 @@ -0,0 +1,76 @@
 +const fs = require("fs");
 +const path = require("path");
@@ -86,7 +86,7 @@ diff -u -r -N a/lib/channel-defaults.js b/lib/channel-defaults.js
 +};
 diff -u -r -N a/lib/channel-defaults-routes.js b/lib/channel-defaults-routes.js
 --- a/lib/channel-defaults-routes.js	1970-01-01 00:00:00.000000000 +0000
-+++ b/lib/channel-defaults-routes.js	2026-11-13 09:36:08.546821821 +0000
++++ b/lib/channel-defaults-routes.js	2026-11-13 09:43:28.140623958 +0000
 @@ -0,0 +1,46 @@
 +const { defaultsFile, listDefaults, putDefault } = require("./channel-defaults");
 +const { normalizeChannelSettings } = require("./channel-settings");
@@ -136,8 +136,8 @@ diff -u -r -N a/lib/channel-defaults-routes.js b/lib/channel-defaults-routes.js
 +module.exports = { mountChannelDefaults };
 diff -u -r -N a/lib/channel-settings.js b/lib/channel-settings.js
 --- a/lib/channel-settings.js	1970-01-01 00:00:00.000000000 +0000
-+++ b/lib/channel-settings.js	2026-11-13 09:36:08.546821821 +0000
-@@ -0,0 +1,207 @@
++++ b/lib/channel-settings.js	2026-11-13 09:43:28.140623958 +0000
+@@ -0,0 +1,206 @@
 +const TITLE_LIMIT = 100;
 +const TAGS_LIMIT = 500;
 +const YOUTUBE_CATEGORIES = {
@@ -308,7 +308,8 @@ diff -u -r -N a/lib/channel-settings.js b/lib/channel-settings.js
 +    notifySubscribers: safe.youtube.notifySubscribers !== false,
 +  };
 +  if (files.youtubeThumbnail && files.youtubeThumbnail.storedName) {
-+    youtube.thumbnail = { storedName: String(files.youtubeThumbnail.storedName) };
++    const storedName = String(files.youtubeThumbnail.storedName);
++    youtube.thumbnail = { storedName, url: "/uploads/" + storedName };
 +  }
 +  const instagram = {
 +    share_to_feed: safe.instagram.shareToFeed !== false,
@@ -316,7 +317,8 @@ diff -u -r -N a/lib/channel-settings.js b/lib/channel-settings.js
 +    audio_name: safe.instagram.audioName,
 +  };
 +  if (files.instagramCover && files.instagramCover.storedName) {
-+    instagram.coverStoredName = String(files.instagramCover.storedName);
++    const storedName = String(files.instagramCover.storedName);
++    instagram.cover_url = "/uploads/" + storedName;
 +  } else if (safe.instagram.thumbOffsetSec > 0) {
 +    instagram.thumb_offset = safe.instagram.thumbOffsetSec;
 +  }
@@ -324,9 +326,6 @@ diff -u -r -N a/lib/channel-settings.js b/lib/channel-settings.js
 +    title: safe.facebook.title || cleanText(ctx.title, 255),
 +    description: String(ctx.caption || ""),
 +  };
-+  if (files.facebookThumbnail && files.facebookThumbnail.storedName) {
-+    facebook.thumbnailStoredName = String(files.facebookThumbnail.storedName);
-+  }
 +  const threads = {
 +    reply_control: safe.threads.replyControl,
 +  };
@@ -345,9 +344,44 @@ diff -u -r -N a/lib/channel-settings.js b/lib/channel-settings.js
 +  buildYoutubeDescription,
 +  buildPlatformPayloads,
 +};
+diff -u -r -N a/lib/job-uploads.js b/lib/job-uploads.js
+--- a/lib/job-uploads.js	1970-01-01 00:00:00.000000000 +0000
++++ b/lib/job-uploads.js	2026-11-13 09:43:28.140623958 +0000
+@@ -0,0 +1,31 @@
++function jobUploadFields() {
++  return [
++    { name: "files", maxCount: 20 },
++    { name: "youtubeThumbnail", maxCount: 1 },
++    { name: "instagramCover", maxCount: 1 },
++  ];
++}
++
++function storedFile(file) {
++  if (!file || !file.filename) return null;
++  return {
++    originalName: file.originalname || "",
++    storedName: file.filename,
++    mimeType: file.mimetype || "",
++    size: Number(file.size) || 0,
++  };
++}
++
++function filesFromRequest(reqFiles) {
++  const grouped = Array.isArray(reqFiles) ? { files: reqFiles } : (reqFiles || {});
++  const main = Array.isArray(grouped.files) ? grouped.files : [];
++  return {
++    files: main.map(storedFile).filter(Boolean),
++    extraFiles: {
++      youtubeThumbnail: storedFile((grouped.youtubeThumbnail || [])[0]),
++      instagramCover: storedFile((grouped.instagramCover || [])[0]),
++    },
++  };
++}
++
++module.exports = { jobUploadFields, filesFromRequest };
 diff -u -r -N a/lib/publish-job.js b/lib/publish-job.js
---- a/lib/publish-job.js	2026-11-13 09:36:08.546821821 +0000
-+++ b/lib/publish-job.js	2026-11-13 09:36:08.546821821 +0000
+--- a/lib/publish-job.js	2026-11-13 09:43:28.140623958 +0000
++++ b/lib/publish-job.js	2026-11-13 09:43:28.140623958 +0000
 @@ -1,5 +1,7 @@
  const crypto = require("crypto");
  const { captionForChannel, mergeCaptionFields } = require("./channel-caption");
@@ -438,8 +472,8 @@ diff -u -r -N a/lib/publish-job.js b/lib/publish-job.js
      return { ok: true, status: 200, dryRun: true, job, tasks, scheduled: !!deferSchedule };
    }
 diff -u -r -N a/public/app.js b/public/app.js
---- a/public/app.js	2026-11-13 09:36:08.546821821 +0000
-+++ b/public/app.js	2026-11-13 09:36:08.546821821 +0000
+--- a/public/app.js	2026-11-13 09:43:28.140623958 +0000
++++ b/public/app.js	2026-11-13 09:43:28.140623958 +0000
 @@ -2516,6 +2516,7 @@
      if (xBox) xBox.hidden = !(selected.has("x") || selected.has("twitter") || selected.has("naver-clip"));
      if (threadsBox) threadsBox.hidden = !selected.has("threads");
@@ -476,7 +510,7 @@ diff -u -r -N a/public/app.js b/public/app.js
      };
    }
  
-@@ -3769,6 +3777,19 @@
+@@ -3769,6 +3777,17 @@
      if (getYoutubeMadeForKids()) fd.append("youtubeMadeForKids", "1");
      if (getYoutubePaidPromotion()) fd.append("youtubePaidPromotion", "1");
      if (tiktokOptions) fd.append("tiktokOptions", JSON.stringify(tiktokOptions));
@@ -489,16 +523,14 @@ diff -u -r -N a/public/app.js b/public/app.js
 +    fd.append("youtubeDurationSec", String(currentVideoDurationSec > 0 ? Math.round(currentVideoDurationSec) : 0));
 +    const ytThumb = document.getElementById("yt-thumb");
 +    const igCover = document.getElementById("ig-cover");
-+    const fbThumb = document.getElementById("fb-thumb");
 +    if (ytThumb && ytThumb.files && ytThumb.files[0]) fd.append("youtubeThumbnail", ytThumb.files[0]);
 +    if (igCover && igCover.files && igCover.files[0]) fd.append("instagramCover", igCover.files[0]);
-+    if (fbThumb && fbThumb.files && fbThumb.files[0]) fd.append("facebookThumbnail", fbThumb.files[0]);
      packed.files.forEach((f) => fd.append("files", f));
  
      btn.disabled = true;
 diff -u -r -N a/public/channel-settings.js b/public/channel-settings.js
 --- a/public/channel-settings.js	1970-01-01 00:00:00.000000000 +0000
-+++ b/public/channel-settings.js	2026-11-13 09:36:08.546821821 +0000
++++ b/public/channel-settings.js	2026-11-13 09:43:28.140623958 +0000
 @@ -0,0 +1,194 @@
 +(function () {
 +  let client = null;
@@ -695,8 +727,8 @@ diff -u -r -N a/public/channel-settings.js b/public/channel-settings.js
 +  };
 +})();
 diff -u -r -N a/public/index.html b/public/index.html
---- a/public/index.html	2026-11-13 09:36:08.546821821 +0000
-+++ b/public/index.html	2026-11-13 09:36:08.546821821 +0000
+--- a/public/index.html	2026-11-13 09:43:28.140623958 +0000
++++ b/public/index.html	2026-11-13 09:43:28.140623958 +0000
 @@ -523,6 +523,14 @@
                      <input type="checkbox" id="tiktok-commercial-toggle" />
                    </label>
@@ -712,7 +744,7 @@ diff -u -r -N a/public/index.html b/public/index.html
  
                    <div id="tiktok-commercial-options" class="tiktok-commercial-options hidden">
                      <label class="tiktok-dp-check-card" id="tiktok-commercial-your-brand-wrap" for="tiktok-commercial-your-brand">
-@@ -546,6 +554,82 @@
+@@ -546,6 +554,81 @@
                    </div>
                  </div>
                </div>
@@ -784,8 +816,7 @@ diff -u -r -N a/public/index.html b/public/index.html
 +                <section class="channel-native-card" data-channel="facebook">
 +                  <h3>페이스북</h3>
 +                  <label class="field"><span class="lbl">영상 제목</span><input type="text" id="fb-title" maxlength="255" placeholder="비우면 위 제목을 사용합니다" /></label>
-+                  <p class="hint">설명은 기본 설명글을 사용합니다.</p>
-+                  <label class="field"><span class="lbl">썸네일</span><input type="file" id="fb-thumb" accept="image/*" /></label>
++                  <p class="hint">설명은 기본 설명글을 사용합니다. 페이스북 썸네일은 릴스 API로 보내지 않아 칸을 두지 않았습니다.</p>
 +                  <label class="private-post-check" for="fb-save"><span class="private-post-line"><input type="checkbox" id="fb-save" checked /> 이 채널 기본값으로 저장</span></label>
 +                  <p class="hint" id="fb-default-state">처음 설정입니다. 켜 두면 다음 올리기에 이 값이 채워집니다.</p>
 +                </section>
@@ -795,7 +826,7 @@ diff -u -r -N a/public/index.html b/public/index.html
                <label class="field compose-schedule-field">
                  <span class="lbl">예약</span>
                  <input type="datetime-local" id="compose-scheduledAt" />
-@@ -1159,6 +1243,7 @@
+@@ -1159,6 +1242,7 @@
  
    </div>
    <script src="/yt-report.js?v=report-1"></script>
@@ -804,8 +835,8 @@ diff -u -r -N a/public/index.html b/public/index.html
  </body>
  </html>
 diff -u -r -N a/public/styles.css b/public/styles.css
---- a/public/styles.css	2026-11-13 09:36:08.546821821 +0000
-+++ b/public/styles.css	2026-11-13 09:36:08.546821821 +0000
+--- a/public/styles.css	2026-11-13 09:43:28.140623958 +0000
++++ b/public/styles.css	2026-11-13 09:43:28.140623958 +0000
 @@ -2601,3 +2601,13 @@
    .rm-form { grid-template-columns: 1fr; }
    .rm-preview { height: 520px; }
@@ -820,10 +851,49 @@ diff -u -r -N a/public/styles.css b/public/styles.css
 +.channel-native input[type="file"],
 +.channel-native select { width: 100%; max-width: 100%; box-sizing: border-box; }
 +.channel-native .private-post-line { display: flex; gap: 8px; align-items: flex-start; flex-wrap: wrap; max-width: 100%; }
+diff -u -r -N a/server.js b/server.js
+--- a/server.js	2026-11-13 09:43:28.140623958 +0000
++++ b/server.js	2026-11-13 09:43:28.140623958 +0000
+@@ -24,6 +24,8 @@
+ const staff = require("./lib/staff");
+ const { createPublishJob } = require("./lib/publish-job");
+ const { captionJobForChannel } = require("./lib/channel-caption");
++const { mountChannelDefaults } = require("./lib/channel-defaults-routes");
++const { jobUploadFields, filesFromRequest } = require("./lib/job-uploads");
+ const { mountOnepostMcp } = require("./lib/mcp");
+ const { buildChannelStatus } = require("./lib/mcp-channels");
+ const { createMcpStore } = require("./lib/mcp-store");
+@@ -4191,18 +4193,16 @@
+-app.post("/api/jobs", upload.array("files", 20), (req, res) => {
++mountChannelDefaults(app, { rootDir: __dirname, getClient });
++app.post("/api/jobs", upload.fields(jobUploadFields()), (req, res) => {
+   try {
+     const ua = String(req.get("user-agent") || "");
+     const desktop =
+       ua.includes("OnePostDesktop") ||
+       req.get("x-onepost-desktop") === "1" ||
+       String((req.body && req.body.desktopApp) || "") === "1";
+-    const files = (req.files || []).map((f) => ({
+-      originalName: f.originalname,
+-      storedName: f.filename,
+-      mimeType: f.mimetype,
+-      size: f.size,
+-    }));
++    const uploaded = filesFromRequest(req.files);
++    const files = uploaded.files;
+     const outcome = createPublishJob(
+       {
+         email: req.user && req.user.email,
+         body: req.body,
+         files,
++        extraFiles: uploaded.extraFiles,
+         desktop,
+       },
+       {
 diff -u -r -N a/test/channel-settings.test.js b/test/channel-settings.test.js
 --- a/test/channel-settings.test.js	1970-01-01 00:00:00.000000000 +0000
-+++ b/test/channel-settings.test.js	2026-11-13 09:36:08.546821821 +0000
-@@ -0,0 +1,110 @@
++++ b/test/channel-settings.test.js	2026-11-13 09:43:28.140623958 +0000
+@@ -0,0 +1,124 @@
 +const test = require("node:test");
 +const assert = require("node:assert/strict");
 +const fs = require("fs");
@@ -831,6 +901,7 @@ diff -u -r -N a/test/channel-settings.test.js b/test/channel-settings.test.js
 +const path = require("path");
 +const { putDefault, getDefault, listDefaults } = require("../lib/channel-defaults");
 +const { buildPlatformPayloads, buildYoutubeTitle, TITLE_LIMIT } = require("../lib/channel-settings");
++const { filesFromRequest } = require("../lib/job-uploads");
 +const { createPublishJob } = require("../lib/publish-job");
 +
 +function deps(extra) {
@@ -890,8 +961,9 @@ diff -u -r -N a/test/channel-settings.test.js b/test/channel-settings.test.js
 +  assert.deepEqual(ig.collaborators, ["cafe", "shop", "third"]);
 +  assert.equal(ig.share_to_feed, true);
 +  assert.equal(ig.audio_name, "원본");
-+  assert.equal(ig.coverStoredName, "cover.jpg");
++  assert.equal(ig.cover_url, "/uploads/cover.jpg");
 +  assert.equal(ig.thumb_offset, undefined);
++  assert.equal(Object.prototype.hasOwnProperty.call(buildPlatformPayloads({}, { extraFiles: { facebookThumbnail: { storedName: "fb.jpg" } } }).facebook, "thumbnailStoredName"), false);
 +  const offset = buildPlatformPayloads({ instagram: { thumbOffsetSec: 2, shareToFeed: false } }).instagram;
 +  assert.equal(offset.thumb_offset, 2);
 +  assert.equal(offset.share_to_feed, false);
@@ -933,4 +1005,16 @@ diff -u -r -N a/test/channel-settings.test.js b/test/channel-settings.test.js
 +  assert.equal(getDefault(file, { clientId: "shop", channelId: "youtube", accountId: "acc-1" }).settings.tags, "김치");
 +  assert.equal(getDefault(file, { clientId: "shop", channelId: "instagram", accountId: "" }).settings.collaborators, "cafe");
 +  fs.unlinkSync(file);
++});
++
++test("thumbnail and cover uploads are stored and addressed under /uploads", () => {
++  const parsed = filesFromRequest({
++    files: [{ originalname: "a.mp4", filename: "a.mp4", mimetype: "video/mp4", size: 10 }],
++    youtubeThumbnail: [{ originalname: "thumb.jpg", filename: "thumb.jpg", mimetype: "image/jpeg", size: 4 }],
++    instagramCover: [{ originalname: "cover.jpg", filename: "cover.jpg", mimetype: "image/jpeg", size: 5 }],
++  });
++  assert.equal(parsed.files[0].storedName, "a.mp4");
++  const payload = buildPlatformPayloads({}, { extraFiles: parsed.extraFiles });
++  assert.equal(payload.youtube.thumbnail.url, "/uploads/thumb.jpg");
++  assert.equal(payload.instagram.cover_url, "/uploads/cover.jpg");
 +});
