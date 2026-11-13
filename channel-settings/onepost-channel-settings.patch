@@ -1,0 +1,1020 @@
+diff -u -r -N a/adapters/youtube.js b/adapters/youtube.js
+--- a/adapters/youtube.js	2026-11-13 09:43:28.140623958 +0000
++++ b/adapters/youtube.js	2026-11-13 09:43:28.140623958 +0000
+@@ -1 +1 @@
+-      containsSyntheticMedia: true,
++      containsSyntheticMedia: job.youtubeSynthetic === true,
+diff -u -r -N a/lib/channel-defaults.js b/lib/channel-defaults.js
+--- a/lib/channel-defaults.js	1970-01-01 00:00:00.000000000 +0000
++++ b/lib/channel-defaults.js	2026-11-13 09:43:28.140623958 +0000
+@@ -0,0 +1,76 @@
++const fs = require("fs");
++const path = require("path");
++
++function defaultsFile(rootDir) {
++  return path.join(rootDir || process.cwd(), "data", "channel-defaults.json");
++}
++
++function recordKey(input) {
++  const clientId = String((input && input.clientId) || "").trim();
++  const channelId = String((input && input.channelId) || "").trim().toLowerCase();
++  const accountId = String((input && input.accountId) || "").trim();
++  return clientId + "\u001f" + channelId + "\u001f" + accountId;
++}
++
++function emptyStore() {
++  return { version: 1, records: {} };
++}
++
++function readStore(file) {
++  try {
++    const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
++    if (!parsed || typeof parsed !== "object" || !parsed.records || typeof parsed.records !== "object") {
++      return emptyStore();
++    }
++    return { version: 1, records: parsed.records };
++  } catch {
++    return emptyStore();
++  }
++}
++
++function writeStore(file, store) {
++  fs.mkdirSync(path.dirname(file), { recursive: true });
++  const tmp = file + ".tmp";
++  fs.writeFileSync(tmp, JSON.stringify({ version: 1, records: store.records || {} }, null, 2));
++  fs.renameSync(tmp, file);
++}
++
++function listDefaults(file, clientId) {
++  const store = readStore(file);
++  const want = String(clientId || "").trim();
++  return Object.values(store.records).filter((row) => row && row.clientId === want);
++}
++
++function getDefault(file, input) {
++  const store = readStore(file);
++  return store.records[recordKey(input)] || null;
++}
++
++function putDefault(file, input) {
++  const clientId = String((input && input.clientId) || "").trim();
++  const channelId = String((input && input.channelId) || "").trim().toLowerCase();
++  if (!clientId || !channelId) {
++    throw new Error("가게와 채널이 필요합니다.");
++  }
++  const accountId = String((input && input.accountId) || "").trim();
++  const store = readStore(file);
++  const row = {
++    clientId,
++    channelId,
++    accountId,
++    settings: input.settings && typeof input.settings === "object" ? input.settings : {},
++    updatedAt: new Date().toISOString(),
++  };
++  store.records[recordKey(row)] = row;
++  writeStore(file, store);
++  return row;
++}
++
++module.exports = {
++  defaultsFile,
++  recordKey,
++  readStore,
++  listDefaults,
++  getDefault,
++  putDefault,
++};
+diff -u -r -N a/lib/channel-defaults-routes.js b/lib/channel-defaults-routes.js
+--- a/lib/channel-defaults-routes.js	1970-01-01 00:00:00.000000000 +0000
++++ b/lib/channel-defaults-routes.js	2026-11-13 09:43:28.140623958 +0000
+@@ -0,0 +1,46 @@
++const { defaultsFile, listDefaults, putDefault } = require("./channel-defaults");
++const { normalizeChannelSettings } = require("./channel-settings");
++
++function emailOf(req) {
++  const session = req && req.session;
++  const user = (session && session.user) || (req && req.user) || {};
++  return String((session && session.email) || user.email || "").trim().toLowerCase();
++}
++
++function mountChannelDefaults(app, opts) {
++  const options = opts || {};
++  const file = options.file || defaultsFile(options.rootDir);
++  app.get("/api/channel-defaults", (req, res) => {
++    const email = emailOf(req);
++    if (!email) return res.status(401).json({ error: "로그인이 필요합니다." });
++    const clientId = String(req.query.clientId || "").trim();
++    if (options.getClient && !options.getClient(email, clientId)) {
++      return res.status(404).json({ error: "가게를 찾지 못했습니다." });
++    }
++    res.json({ defaults: listDefaults(file, clientId) });
++  });
++  app.put("/api/channel-defaults", (req, res) => {
++    const email = emailOf(req);
++    if (!email) return res.status(401).json({ error: "로그인이 필요합니다." });
++    const body = req.body || {};
++    const clientId = String(body.clientId || "").trim();
++    if (options.getClient && !options.getClient(email, clientId)) {
++      return res.status(404).json({ error: "가게를 찾지 못했습니다." });
++    }
++    try {
++      const channelId = String(body.channelId || "").toLowerCase();
++      const saved = putDefault(file, {
++        clientId,
++        channelId,
++        accountId: body.accountId,
++        settings: normalizeChannelSettings({ [channelId]: body.settings || {} })[channelId] || {},
++      });
++      res.json({ ok: true, saved });
++    } catch (err) {
++      res.status(400).json({ error: "기본값을 저장하지 못했습니다." });
++    }
++  });
++  return app;
++}
++
++module.exports = { mountChannelDefaults };
+diff -u -r -N a/lib/channel-settings.js b/lib/channel-settings.js
+--- a/lib/channel-settings.js	1970-01-01 00:00:00.000000000 +0000
++++ b/lib/channel-settings.js	2026-11-13 09:43:28.140623958 +0000
+@@ -0,0 +1,206 @@
++const TITLE_LIMIT = 100;
++const TAGS_LIMIT = 500;
++const YOUTUBE_CATEGORIES = {
++  "1": "영화/애니메이션",
++  "2": "자동차",
++  "10": "음악",
++  "15": "반려동물",
++  "17": "스포츠",
++  "19": "여행/이벤트",
++  "20": "게임",
++  "22": "인물/블로그",
++  "23": "코미디",
++  "24": "엔터테인먼트",
++  "25": "뉴스/정치",
++  "26": "노하우/스타일",
++  "27": "교육",
++  "28": "과학기술",
++  "29": "비영리/사회운동",
++};
++const THREADS_REPLIES = {
++  everyone: "모두",
++  accounts_you_follow: "팔로우하는 계정",
++  mentioned_only: "멘션한 계정만",
++};
++
++function flag(value, fallback) {
++  if (value == null || value === "") return fallback;
++  const raw = String(value).trim().toLowerCase();
++  if (raw === "0" || raw === "false" || raw === "off" || value === false) return false;
++  if (raw === "1" || raw === "true" || raw === "on" || value === true) return true;
++  return fallback;
++}
++
++function cleanText(value, max) {
++  const text = String(value || "").replace(/\s+/g, " ").trim();
++  return max ? text.slice(0, max) : text;
++}
++
++function normalizeTags(raw) {
++  const parts = Array.isArray(raw) ? raw : String(raw || "").split(/[,，]/);
++  const tags = [];
++  let total = 0;
++  parts.forEach((part) => {
++    const tag = String(part || "").trim().replace(/^#+/, "");
++    if (!tag || tags.some((item) => item.toLowerCase() === tag.toLowerCase())) return;
++    const extra = (tags.length ? 1 : 0) + tag.length;
++    if (total + extra > TAGS_LIMIT) return;
++    tags.push(tag);
++    total += extra;
++  });
++  return tags;
++}
++
++function usernames(raw, limit) {
++  const parts = Array.isArray(raw) ? raw : String(raw || "").split(/[,，]/);
++  const names = [];
++  parts.forEach((part) => {
++    const name = String(part || "").trim().replace(/^@+/, "");
++    if (!/^[A-Za-z0-9._]{1,30}$/.test(name)) return;
++    if (names.some((item) => item.toLowerCase() === name.toLowerCase())) return;
++    if (names.length >= limit) return;
++    names.push(name);
++  });
++  return names;
++}
++
++function normalizeChannelSettings(raw) {
++  const src = raw && typeof raw === "object" ? raw : {};
++  const youtube = src.youtube && typeof src.youtube === "object" ? src.youtube : {};
++  const instagram = src.instagram && typeof src.instagram === "object" ? src.instagram : {};
++  const threads = src.threads && typeof src.threads === "object" ? src.threads : {};
++  const facebook = src.facebook && typeof src.facebook === "object" ? src.facebook : {};
++  const tiktok = src.tiktok && typeof src.tiktok === "object" ? src.tiktok : {};
++  const categoryId = YOUTUBE_CATEGORIES[String(youtube.categoryId || "22")] ? String(youtube.categoryId || "22") : "22";
++  const reply = THREADS_REPLIES[String(threads.replyControl || "everyone")] ? String(threads.replyControl || "everyone") : "everyone";
++  const license = youtube.license === "creativeCommon" ? "creativeCommon" : "youtube";
++  const madeForKids = String(youtube.madeForKids || "no") === "yes" ? "yes" : "no";
++  const thumbOffset = Number(instagram.thumbOffsetSec);
++  return {
++    youtube: {
++      synthetic: flag(youtube.synthetic, false),
++      tags: normalizeTags(youtube.tags).join(", "),
++      categoryId,
++      appendShorts: flag(youtube.appendShorts, true),
++      madeForKids,
++      notifySubscribers: flag(youtube.notifySubscribers, true),
++      license,
++      embeddable: flag(youtube.embeddable, true),
++    },
++    instagram: {
++      thumbOffsetSec: Number.isFinite(thumbOffset) && thumbOffset >= 0 ? Math.round(thumbOffset) : 0,
++      collaborators: usernames(instagram.collaborators, 3).join(", "),
++      shareToFeed: flag(instagram.shareToFeed, true),
++      audioName: cleanText(instagram.audioName, 100),
++    },
++    threads: {
++      replyControl: reply,
++      topicTag: cleanText(String(threads.topicTag || "").replace(/^#+/, ""), 50),
++    },
++    facebook: {
++      title: cleanText(facebook.title, 255),
++    },
++    tiktok: {
++      isAigc: flag(tiktok.isAigc, false),
++    },
++  };
++}
++
++function buildYoutubeTitle(input) {
++  const source = input || {};
++  const seconds = Number(source.durationSec);
++  const isShort = Number.isFinite(seconds) && seconds > 0 && seconds <= 60;
++  const needShorts = source.appendShorts !== false && isShort && !/#shorts\b/i.test(String(source.title || ""));
++  let base = cleanText(source.title, 0);
++  const reserved = needShorts ? " #shorts".length : 0;
++  if (base.length + reserved > TITLE_LIMIT) base = base.slice(0, Math.max(0, TITLE_LIMIT - reserved)).trimEnd();
++  let out = base;
++  normalizeTags(source.tags).slice(0, 3).forEach((tag) => {
++    const hash = "#" + tag.replace(/\s+/g, "");
++    if (!hash || out.toLowerCase().includes(hash.toLowerCase())) return;
++    const candidate = (out ? out + " " : "") + hash;
++    if (candidate.length + reserved > TITLE_LIMIT) return;
++    out = candidate;
++  });
++  if (needShorts) out = (out ? out + " " : "") + "#shorts";
++  return out.slice(0, TITLE_LIMIT);
++}
++
++function buildYoutubeDescription(input) {
++  const original = String((input && input.description) || "");
++  const seconds = Number(input && input.durationSec);
++  const isShort = Number.isFinite(seconds) && seconds > 0 && seconds <= 60;
++  if (!isShort || input.appendShorts === false) return original;
++  const cleaned = original.replace(/[ \t]*#shorts\b/gi, "").replace(/[ \t]+\n/g, "\n").trim();
++  return cleaned ? cleaned + "\n#shorts" : "#shorts";
++}
++
++function buildPlatformPayloads(settings, context) {
++  const safe = normalizeChannelSettings(settings);
++  const ctx = context || {};
++  const files = ctx.extraFiles || {};
++  const youtubeTitle = buildYoutubeTitle({
++    title: ctx.title,
++    tags: safe.youtube.tags,
++    durationSec: ctx.durationSec,
++    appendShorts: safe.youtube.appendShorts,
++  });
++  const youtubeDescription = buildYoutubeDescription({
++    description: ctx.caption,
++    durationSec: ctx.durationSec,
++    appendShorts: safe.youtube.appendShorts,
++  });
++  const youtube = {
++    snippet: {
++      title: youtubeTitle,
++      description: youtubeDescription,
++      tags: normalizeTags(safe.youtube.tags),
++      categoryId: safe.youtube.categoryId,
++      defaultLanguage: "ko",
++      defaultAudioLanguage: "ko",
++    },
++    status: {
++      containsSyntheticMedia: safe.youtube.synthetic === true,
++      selfDeclaredMadeForKids: safe.youtube.madeForKids === "yes",
++      embeddable: safe.youtube.embeddable !== false,
++      license: safe.youtube.license,
++    },
++    notifySubscribers: safe.youtube.notifySubscribers !== false,
++  };
++  if (files.youtubeThumbnail && files.youtubeThumbnail.storedName) {
++    const storedName = String(files.youtubeThumbnail.storedName);
++    youtube.thumbnail = { storedName, url: "/uploads/" + storedName };
++  }
++  const instagram = {
++    share_to_feed: safe.instagram.shareToFeed !== false,
++    collaborators: usernames(safe.instagram.collaborators, 3),
++    audio_name: safe.instagram.audioName,
++  };
++  if (files.instagramCover && files.instagramCover.storedName) {
++    const storedName = String(files.instagramCover.storedName);
++    instagram.cover_url = "/uploads/" + storedName;
++  } else if (safe.instagram.thumbOffsetSec > 0) {
++    instagram.thumb_offset = safe.instagram.thumbOffsetSec;
++  }
++  const facebook = {
++    title: safe.facebook.title || cleanText(ctx.title, 255),
++    description: String(ctx.caption || ""),
++  };
++  const threads = {
++    reply_control: safe.threads.replyControl,
++  };
++  if (safe.threads.topicTag) threads.topic_tag = safe.threads.topicTag;
++  const tiktok = { is_aigc: safe.tiktok.isAigc === true };
++  return { youtube, instagram, facebook, threads, tiktok };
++}
++
++module.exports = {
++  TITLE_LIMIT,
++  YOUTUBE_CATEGORIES,
++  THREADS_REPLIES,
++  normalizeTags,
++  normalizeChannelSettings,
++  buildYoutubeTitle,
++  buildYoutubeDescription,
++  buildPlatformPayloads,
++};
+diff -u -r -N a/lib/job-uploads.js b/lib/job-uploads.js
+--- a/lib/job-uploads.js	1970-01-01 00:00:00.000000000 +0000
++++ b/lib/job-uploads.js	2026-11-13 09:43:28.140623958 +0000
+@@ -0,0 +1,31 @@
++function jobUploadFields() {
++  return [
++    { name: "files", maxCount: 20 },
++    { name: "youtubeThumbnail", maxCount: 1 },
++    { name: "instagramCover", maxCount: 1 },
++  ];
++}
++
++function storedFile(file) {
++  if (!file || !file.filename) return null;
++  return {
++    originalName: file.originalname || "",
++    storedName: file.filename,
++    mimeType: file.mimetype || "",
++    size: Number(file.size) || 0,
++  };
++}
++
++function filesFromRequest(reqFiles) {
++  const grouped = Array.isArray(reqFiles) ? { files: reqFiles } : (reqFiles || {});
++  const main = Array.isArray(grouped.files) ? grouped.files : [];
++  return {
++    files: main.map(storedFile).filter(Boolean),
++    extraFiles: {
++      youtubeThumbnail: storedFile((grouped.youtubeThumbnail || [])[0]),
++      instagramCover: storedFile((grouped.instagramCover || [])[0]),
++    },
++  };
++}
++
++module.exports = { jobUploadFields, filesFromRequest };
+diff -u -r -N a/lib/publish-job.js b/lib/publish-job.js
+--- a/lib/publish-job.js	2026-11-13 09:43:28.140623958 +0000
++++ b/lib/publish-job.js	2026-11-13 09:43:28.140623958 +0000
+@@ -1,5 +1,7 @@
+ const crypto = require("crypto");
+ const { captionForChannel, mergeCaptionFields } = require("./channel-caption");
++const { defaultsFile, putDefault } = require("./channel-defaults");
++const { buildPlatformPayloads, normalizeChannelSettings } = require("./channel-settings");
+ 
+ function normalizeChannelId(id) {
+   const s = String(id || "").trim().toLowerCase();
+@@ -113,10 +115,32 @@
+         yourBrand: Boolean(parsed.yourBrand),
+         brandedContent: Boolean(parsed.brandedContent),
+         videoDurationSec: Number(parsed.videoDurationSec) > 0 ? Number(parsed.videoDurationSec) : 0,
++        isAigc: Boolean(parsed.isAigc),
+       };
+     }
+   }
+ 
++  const hasChannelSettings = body.channelSettings != null && String(body.channelSettings).trim() !== "";
++  const channelSettings = normalizeChannelSettings(parseObjectMap(body.channelSettings, (value) => value) || {});
++  if (tiktokOptions) tiktokOptions.isAigc = hasChannelSettings ? channelSettings.tiktok.isAigc === true : tiktokOptions.isAigc;
++  const youtubeMadeForKidsEffective = hasChannelSettings
++    ? channelSettings.youtube.madeForKids === "yes"
++    : youtubeMadeForKids;
++  const platformPayloads = buildPlatformPayloads(
++    Object.assign({}, channelSettings, {
++      youtube: Object.assign({}, channelSettings.youtube, {
++        madeForKids: youtubeMadeForKidsEffective ? "yes" : "no",
++      }),
++      tiktok: { isAigc: !!(tiktokOptions && tiktokOptions.isAigc) },
++    }),
++    {
++      title,
++      caption,
++      durationSec: Number(body.youtubeDurationSec) > 0 ? Number(body.youtubeDurationSec) : 0,
++      extraFiles: ctx.extraFiles || {},
++    }
++  );
++
+   let channelIds = body.channels || [];
+   if (typeof channelIds === "string") {
+     try {
+@@ -260,8 +284,14 @@
+     captionsByChannel,
+     captionX: mergedCaptions.captionX,
+     captionThreads: mergedCaptions.captionThreads,
+-    youtubeMadeForKids,
++    youtubeMadeForKids: youtubeMadeForKidsEffective,
+     youtubePaidPromotion,
++    youtubeSynthetic: platformPayloads.youtube.status.containsSyntheticMedia === true,
++    youtubeTitle: platformPayloads.youtube.snippet.title,
++    youtubeDescription: platformPayloads.youtube.snippet.description,
++    youtubeTags: platformPayloads.youtube.snippet.tags,
++    channelSettings,
++    platformPayloads,
+     tiktokOptions,
+     createdAt: now,
+   };
+@@ -285,11 +315,31 @@
+           ? deps.store.RPA_STATUS_QUEUED
+           : "발행 중",
+     caption: captionForChannel(job, channel.id),
++    platformPayload: job.platformPayloads[channel.id] || null,
+     createdAt: now,
+     completedAt: null,
+     result: null,
+   }));
+ 
++  const saveFlags = parseObjectMap(body.saveChannelDefaults, (value) => flag(value)) || {};
++  const accountIds = parseObjectMap(body.channelAccounts, (value) => String(value || "")) || {};
++  const defaultsPath = deps.defaultsFile || (ctx.dryRun ? "" : defaultsFile());
++  if (defaultsPath) {
++    ["youtube", "instagram", "threads", "facebook", "tiktok"].forEach((channelId) => {
++      if (!saveFlags[channelId]) return;
++      try {
++        putDefault(defaultsPath, {
++          clientId: client.id,
++          channelId,
++          accountId: accountIds[channelId] || "",
++          settings: channelSettings[channelId],
++        });
++      } catch {
++        job.channelDefaultsError = "기본값을 저장하지 못했습니다.";
++      }
++    });
++  }
++
+   if (ctx.dryRun) {
+     return { ok: true, status: 200, dryRun: true, job, tasks, scheduled: !!deferSchedule };
+   }
+diff -u -r -N a/public/app.js b/public/app.js
+--- a/public/app.js	2026-11-13 09:43:28.140623958 +0000
++++ b/public/app.js	2026-11-13 09:43:28.140623958 +0000
+@@ -2516,6 +2516,7 @@
+     if (xBox) xBox.hidden = !(selected.has("x") || selected.has("twitter") || selected.has("naver-clip"));
+     if (threadsBox) threadsBox.hidden = !selected.has("threads");
+     updateComposeCharCount();
++    if (window.OnepostChannelSettings) window.OnepostChannelSettings.refresh();
+   }
+ 
+   function updateCaptionCharCount() {
+@@ -2817,6 +2818,9 @@
+     refreshConnectUi();
+     renderSnsPreview();
+     loadLatestUploadLinks();
++    if (window.OnepostChannelSettings) {
++      window.OnepostChannelSettings.setClient(clients.find((item) => item.id === activeClientId) || null);
++    }
+     if (pathOf() === "/analysis") renderChannelAnalysis();
+   }
+ 
+@@ -2915,6 +2919,9 @@
+     refreshConnectUi();
+     renderSnsPreview();
+     loadLatestUploadLinks();
++    if (window.OnepostChannelSettings) {
++      window.OnepostChannelSettings.setClient(clients.find((item) => item.id === activeClientId) || null);
++    }
+   }
+ 
+   async function loadClients(preferId) {
+@@ -3311,6 +3318,7 @@
+       yourBrand: commOn && !!(yourBrandEl && yourBrandEl.checked),
+       brandedContent: commOn && !!(brandedEl && brandedEl.checked),
+       videoDurationSec: currentVideoDurationSec > 0 ? Math.round(currentVideoDurationSec) : 0,
++      isAigc: !!(document.getElementById("tiktok-aigc") && document.getElementById("tiktok-aigc").checked),
+     };
+   }
+ 
+@@ -3769,6 +3777,17 @@
+     if (getYoutubeMadeForKids()) fd.append("youtubeMadeForKids", "1");
+     if (getYoutubePaidPromotion()) fd.append("youtubePaidPromotion", "1");
+     if (tiktokOptions) fd.append("tiktokOptions", JSON.stringify(tiktokOptions));
++    if (window.OnepostChannelSettings) {
++      const native = window.OnepostChannelSettings.collect();
++      fd.append("channelSettings", JSON.stringify(native.settings));
++      fd.append("saveChannelDefaults", JSON.stringify(native.save));
++      fd.append("channelAccounts", JSON.stringify(native.accounts));
++    }
++    fd.append("youtubeDurationSec", String(currentVideoDurationSec > 0 ? Math.round(currentVideoDurationSec) : 0));
++    const ytThumb = document.getElementById("yt-thumb");
++    const igCover = document.getElementById("ig-cover");
++    if (ytThumb && ytThumb.files && ytThumb.files[0]) fd.append("youtubeThumbnail", ytThumb.files[0]);
++    if (igCover && igCover.files && igCover.files[0]) fd.append("instagramCover", igCover.files[0]);
+     packed.files.forEach((f) => fd.append("files", f));
+ 
+     btn.disabled = true;
+diff -u -r -N a/public/channel-settings.js b/public/channel-settings.js
+--- a/public/channel-settings.js	1970-01-01 00:00:00.000000000 +0000
++++ b/public/channel-settings.js	2026-11-13 09:43:28.140623958 +0000
+@@ -0,0 +1,194 @@
++(function () {
++  let client = null;
++  let saved = [];
++  let loadedFor = "";
++  const touched = {};
++
++  function selected() {
++    return new Set(
++      Array.from(document.querySelectorAll("input[name=compose-channel]:checked")).map((el) => el.value)
++    );
++  }
++
++  function accountId(channelId) {
++    const connections = client && client.connections;
++    const row = connections && connections[channelId];
++    const account = row && (row.account || row);
++    return String((account && (account.id || account.openId || account.username)) || "");
++  }
++
++  function savedRow(channelId) {
++    const account = accountId(channelId);
++    return saved.find((row) => row.channelId === channelId && String(row.accountId || "") === account) || null;
++  }
++
++  function setChecked(id, value) {
++    const el = document.getElementById(id);
++    if (el && !touched[id]) el.checked = !!value;
++  }
++
++  function setValue(id, value) {
++    const el = document.getElementById(id);
++    if (el && !touched[id]) el.value = value == null ? "" : String(value);
++  }
++
++  function markState(id, row) {
++    const el = document.getElementById(id);
++    if (!el) return;
++    el.textContent = row
++      ? "저장된 기본값을 채웠습니다."
++      : "처음 설정입니다. 켜 두면 다음 올리기에 이 값이 채워집니다.";
++  }
++
++  function applySaved() {
++    const youtube = savedRow("youtube");
++    const yt = (youtube && youtube.settings) || {};
++    setChecked("yt-synthetic", yt.synthetic === true);
++    setValue("yt-tags", yt.tags || "");
++    setValue("yt-category", yt.categoryId || "22");
++    setChecked("yt-shorts", yt.appendShorts !== false);
++    setValue("yt-kids", yt.madeForKids === "yes" ? "yes" : "no");
++    setChecked("yt-notify", yt.notifySubscribers !== false);
++    setValue("yt-license", yt.license === "creativeCommon" ? "creativeCommon" : "youtube");
++    setChecked("yt-embed", yt.embeddable !== false);
++    setChecked("yt-save", true);
++    markState("yt-default-state", youtube);
++
++    const instagram = savedRow("instagram");
++    const ig = (instagram && instagram.settings) || {};
++    setValue("ig-thumb-sec", ig.thumbOffsetSec || 0);
++    setValue("ig-collaborators", ig.collaborators || "");
++    setChecked("ig-share", ig.shareToFeed !== false);
++    setValue("ig-audio", ig.audioName || "");
++    setChecked("ig-save", true);
++    markState("ig-default-state", instagram);
++
++    const threads = savedRow("threads");
++    const th = (threads && threads.settings) || {};
++    setValue("th-reply", th.replyControl || "everyone");
++    setValue("th-topic", th.topicTag || "");
++    setChecked("th-save", true);
++    markState("th-default-state", threads);
++
++    const facebook = savedRow("facebook");
++    const fb = (facebook && facebook.settings) || {};
++    setValue("fb-title", fb.title || "");
++    setChecked("fb-save", true);
++    markState("fb-default-state", facebook);
++
++    const tiktok = savedRow("tiktok");
++    const tt = (tiktok && tiktok.settings) || {};
++    setChecked("tiktok-aigc", tt.isAigc === true);
++    setChecked("tiktok-save-default", true);
++    markState("tiktok-default-state", tiktok);
++  }
++
++  async function load(clientId) {
++    if (!clientId) {
++      saved = [];
++      loadedFor = "";
++      applySaved();
++      return;
++    }
++    if (loadedFor === clientId) return;
++    loadedFor = clientId;
++    try {
++      const res = await fetch("/api/channel-defaults?clientId=" + encodeURIComponent(clientId));
++      const data = await res.json().catch(() => ({}));
++      saved = res.ok && Array.isArray(data.defaults) ? data.defaults : [];
++    } catch {
++      saved = [];
++    }
++    applySaved();
++  }
++
++  function refresh() {
++    const picks = selected();
++    document.querySelectorAll(".channel-native-card").forEach((card) => {
++      card.hidden = !picks.has(card.getAttribute("data-channel"));
++    });
++    const plain = document.getElementById("channel-native-plain");
++    if (plain) plain.hidden = !(picks.has("x") || picks.has("naver-clip"));
++    const shop = document.getElementById("client-shop");
++    const clientId = (client && client.id) || (shop && shop.value) || "";
++    load(clientId);
++  }
++
++  function checked(id) {
++    const el = document.getElementById(id);
++    return !!(el && el.checked);
++  }
++
++  function value(id) {
++    const el = document.getElementById(id);
++    return el ? el.value : "";
++  }
++
++  function collect() {
++    const settings = {
++      youtube: {
++        synthetic: checked("yt-synthetic"),
++        tags: value("yt-tags"),
++        categoryId: value("yt-category") || "22",
++        appendShorts: checked("yt-shorts"),
++        madeForKids: value("yt-kids") || "no",
++        notifySubscribers: checked("yt-notify"),
++        license: value("yt-license") || "youtube",
++        embeddable: checked("yt-embed"),
++      },
++      instagram: {
++        thumbOffsetSec: Number(value("ig-thumb-sec")) || 0,
++        collaborators: value("ig-collaborators"),
++        shareToFeed: checked("ig-share"),
++        audioName: value("ig-audio"),
++      },
++      threads: {
++        replyControl: value("th-reply") || "everyone",
++        topicTag: value("th-topic"),
++      },
++      facebook: { title: value("fb-title") },
++      tiktok: { isAigc: checked("tiktok-aigc") },
++    };
++    const save = {
++      youtube: checked("yt-save"),
++      instagram: checked("ig-save"),
++      threads: checked("th-save"),
++      facebook: checked("fb-save"),
++      tiktok: checked("tiktok-save-default"),
++    };
++    const accounts = {
++      youtube: accountId("youtube"),
++      instagram: accountId("instagram"),
++      threads: accountId("threads"),
++      facebook: accountId("facebook"),
++      tiktok: accountId("tiktok"),
++    };
++    return { settings, save, accounts };
++  }
++
++  document.addEventListener("input", (event) => {
++    const id = event.target && event.target.id;
++    if (id) touched[id] = true;
++  });
++  document.addEventListener("change", (event) => {
++    const id = event.target && event.target.id;
++    if (id) touched[id] = true;
++    if (event.target && event.target.name === "compose-channel") refresh();
++  });
++
++  window.OnepostChannelSettings = {
++    setClient(next) {
++      const nextId = next && next.id;
++      if (!client || client.id !== nextId) {
++        client = next || null;
++        loadedFor = "";
++        Object.keys(touched).forEach((key) => delete touched[key]);
++      } else {
++        client = next || null;
++      }
++      refresh();
++    },
++    refresh,
++    collect,
++  };
++})();
+diff -u -r -N a/public/index.html b/public/index.html
+--- a/public/index.html	2026-11-13 09:43:28.140623958 +0000
++++ b/public/index.html	2026-11-13 09:43:28.140623958 +0000
+@@ -523,6 +523,14 @@
+                     <input type="checkbox" id="tiktok-commercial-toggle" />
+                   </label>
+                   <p class="tiktok-dp-sub">이 영상이 본인이나 제3자의 브랜드·상품·서비스를 홍보하는 경우 켜 주세요.</p>
++                  <label class="tiktok-dp-check" for="tiktok-aigc">
++                    <input type="checkbox" id="tiktok-aigc" />
++                    <span>AI로 만든 콘텐츠</span>
++                  </label>
++                  <label class="private-post-check" for="tiktok-save-default">
++                    <span class="private-post-line"><input type="checkbox" id="tiktok-save-default" checked /> 이 채널 기본값으로 저장</span>
++                  </label>
++                  <p class="hint" id="tiktok-default-state">처음 설정입니다. 켜 두면 다음 올리기에 이 값이 채워집니다.</p>
+ 
+                   <div id="tiktok-commercial-options" class="tiktok-commercial-options hidden">
+                     <label class="tiktok-dp-check-card" id="tiktok-commercial-your-brand-wrap" for="tiktok-commercial-your-brand">
+@@ -546,6 +554,81 @@
+                   </div>
+                 </div>
+               </div>
++              <div class="box channel-native" id="channel-native-settings">
++                <p class="hint">채널별 게시 옵션. 체크한 채널만 보이고, 기본값으로 저장하면 다음 올리기에 채워집니다.</p>
++                <section class="channel-native-card" data-channel="youtube">
++                  <h3>유튜브</h3>
++                  <label class="private-post-check" for="yt-synthetic">
++                    <span class="private-post-line"><input type="checkbox" id="yt-synthetic" /> AI로 만든 영상 표시</span>
++                  </label>
++                  <label class="field"><span class="lbl">유튜브 태그 (쉼표로 구분)</span><input type="text" id="yt-tags" maxlength="500" placeholder="예: 맛집, 브이로그" /></label>
++                  <label class="field"><span class="lbl">카테고리</span>
++                    <select id="yt-category">
++                      <option value="22">인물/블로그</option>
++                      <option value="26">노하우/스타일</option>
++                      <option value="24">엔터테인먼트</option>
++                      <option value="23">코미디</option>
++                      <option value="10">음악</option>
++                      <option value="27">교육</option>
++                      <option value="28">과학기술</option>
++                      <option value="17">스포츠</option>
++                      <option value="19">여행/이벤트</option>
++                      <option value="20">게임</option>
++                      <option value="15">반려동물</option>
++                      <option value="2">자동차</option>
++                      <option value="1">영화/애니메이션</option>
++                      <option value="25">뉴스/정치</option>
++                      <option value="29">비영리/사회운동</option>
++                    </select>
++                  </label>
++                  <p class="hint">영상 언어와 오디오 언어는 한국어로 보냅니다.</p>
++                  <label class="private-post-check" for="yt-shorts"><span class="private-post-line"><input type="checkbox" id="yt-shorts" checked /> 1분 이하 영상 제목에 #shorts 붙이기</span></label>
++                  <label class="field"><span class="lbl">아동용 여부</span>
++                    <select id="yt-kids"><option value="no">아동용 아님</option><option value="yes">아동용</option></select>
++                  </label>
++                  <label class="private-post-check" for="yt-notify"><span class="private-post-line"><input type="checkbox" id="yt-notify" checked /> 구독자에게 알림</span></label>
++                  <label class="field"><span class="lbl">라이선스</span>
++                    <select id="yt-license"><option value="youtube">표준 유튜브 라이선스</option><option value="creativeCommon">크리에이티브 커먼즈</option></select>
++                  </label>
++                  <label class="private-post-check" for="yt-embed"><span class="private-post-line"><input type="checkbox" id="yt-embed" checked /> 다른 사이트에 퍼가기 허용</span></label>
++                  <label class="field"><span class="lbl">맞춤 썸네일</span><input type="file" id="yt-thumb" accept="image/*" /></label>
++                  <label class="private-post-check" for="yt-save"><span class="private-post-line"><input type="checkbox" id="yt-save" checked /> 이 채널 기본값으로 저장</span></label>
++                  <p class="hint" id="yt-default-state">처음 설정입니다. 켜 두면 다음 올리기에 이 값이 채워집니다.</p>
++                </section>
++                <section class="channel-native-card" data-channel="instagram">
++                  <h3>인스타 릴스</h3>
++                  <label class="field"><span class="lbl">커버 이미지</span><input type="file" id="ig-cover" accept="image/*" /></label>
++                  <label class="field"><span class="lbl">썸네일 시점 (초)</span><input type="number" id="ig-thumb-sec" min="0" step="1" value="0" /></label>
++                  <label class="field"><span class="lbl">공동작업자 (최대 3명, 쉼표)</span><input type="text" id="ig-collaborators" placeholder="예: cafe.seoul" /></label>
++                  <label class="private-post-check" for="ig-share"><span class="private-post-line"><input type="checkbox" id="ig-share" checked /> 피드에도 올리기</span></label>
++                  <label class="field"><span class="lbl">원본 오디오 이름</span><input type="text" id="ig-audio" maxlength="100" /></label>
++                  <p class="hint">인스타 인기 음원은 API로 붙일 수 없어요. 영상에 미리 넣어주세요. 장소 검색도 API로 붙이지 않습니다.</p>
++                  <label class="private-post-check" for="ig-save"><span class="private-post-line"><input type="checkbox" id="ig-save" checked /> 이 채널 기본값으로 저장</span></label>
++                  <p class="hint" id="ig-default-state">처음 설정입니다. 켜 두면 다음 올리기에 이 값이 채워집니다.</p>
++                </section>
++                <section class="channel-native-card" data-channel="threads">
++                  <h3>스레드</h3>
++                  <label class="field"><span class="lbl">답글 범위</span>
++                    <select id="th-reply">
++                      <option value="everyone">모두</option>
++                      <option value="accounts_you_follow">팔로우하는 계정</option>
++                      <option value="mentioned_only">멘션한 계정만</option>
++                    </select>
++                  </label>
++                  <label class="field"><span class="lbl">주제 태그</span><input type="text" id="th-topic" maxlength="50" placeholder="예: 맛집" /></label>
++                  <label class="private-post-check" for="th-save"><span class="private-post-line"><input type="checkbox" id="th-save" checked /> 이 채널 기본값으로 저장</span></label>
++                  <p class="hint" id="th-default-state">처음 설정입니다. 켜 두면 다음 올리기에 이 값이 채워집니다.</p>
++                </section>
++                <section class="channel-native-card" data-channel="facebook">
++                  <h3>페이스북</h3>
++                  <label class="field"><span class="lbl">영상 제목</span><input type="text" id="fb-title" maxlength="255" placeholder="비우면 위 제목을 사용합니다" /></label>
++                  <p class="hint">설명은 기본 설명글을 사용합니다. 페이스북 썸네일은 릴스 API로 보내지 않아 칸을 두지 않았습니다.</p>
++                  <label class="private-post-check" for="fb-save"><span class="private-post-line"><input type="checkbox" id="fb-save" checked /> 이 채널 기본값으로 저장</span></label>
++                  <p class="hint" id="fb-default-state">처음 설정입니다. 켜 두면 다음 올리기에 이 값이 채워집니다.</p>
++                </section>
++                <p class="hint" id="channel-native-plain">트위터(X)와 네이버 클립은 앱에서 고르는 추가 옵션이 없습니다.</p>
++              </div>
++
+               <label class="field compose-schedule-field">
+                 <span class="lbl">예약</span>
+                 <input type="datetime-local" id="compose-scheduledAt" />
+@@ -1159,6 +1242,7 @@
+ 
+   </div>
+   <script src="/yt-report.js?v=report-1"></script>
++  <script src="/channel-settings.js?v=mania-2"></script>
+   <script src="/app.js?v=mania-2"></script>
+ </body>
+ </html>
+diff -u -r -N a/public/styles.css b/public/styles.css
+--- a/public/styles.css	2026-11-13 09:43:28.140623958 +0000
++++ b/public/styles.css	2026-11-13 09:43:28.140623958 +0000
+@@ -2601,3 +2601,13 @@
+   .rm-form { grid-template-columns: 1fr; }
+   .rm-preview { height: 520px; }
+ }
++.channel-native { margin: 12px 0; max-width: 100%; }
++.channel-native-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; margin-top: 10px; max-width: 100%; min-width: 0; }
++.channel-native-card[hidden] { display: none !important; }
++.channel-native-card h3 { margin: 0 0 8px; font-size: 15px; }
++.channel-native .field { margin-top: 8px; min-width: 0; }
++.channel-native input[type="text"],
++.channel-native input[type="number"],
++.channel-native input[type="file"],
++.channel-native select { width: 100%; max-width: 100%; box-sizing: border-box; }
++.channel-native .private-post-line { display: flex; gap: 8px; align-items: flex-start; flex-wrap: wrap; max-width: 100%; }
+diff -u -r -N a/server.js b/server.js
+--- a/server.js	2026-11-13 09:43:28.140623958 +0000
++++ b/server.js	2026-11-13 09:43:28.140623958 +0000
+@@ -24,6 +24,8 @@
+ const staff = require("./lib/staff");
+ const { createPublishJob } = require("./lib/publish-job");
+ const { captionJobForChannel } = require("./lib/channel-caption");
++const { mountChannelDefaults } = require("./lib/channel-defaults-routes");
++const { jobUploadFields, filesFromRequest } = require("./lib/job-uploads");
+ const { mountOnepostMcp } = require("./lib/mcp");
+ const { buildChannelStatus } = require("./lib/mcp-channels");
+ const { createMcpStore } = require("./lib/mcp-store");
+@@ -4191,18 +4193,16 @@
+-app.post("/api/jobs", upload.array("files", 20), (req, res) => {
++mountChannelDefaults(app, { rootDir: __dirname, getClient });
++app.post("/api/jobs", upload.fields(jobUploadFields()), (req, res) => {
+   try {
+     const ua = String(req.get("user-agent") || "");
+     const desktop =
+       ua.includes("OnePostDesktop") ||
+       req.get("x-onepost-desktop") === "1" ||
+       String((req.body && req.body.desktopApp) || "") === "1";
+-    const files = (req.files || []).map((f) => ({
+-      originalName: f.originalname,
+-      storedName: f.filename,
+-      mimeType: f.mimetype,
+-      size: f.size,
+-    }));
++    const uploaded = filesFromRequest(req.files);
++    const files = uploaded.files;
+     const outcome = createPublishJob(
+       {
+         email: req.user && req.user.email,
+         body: req.body,
+         files,
++        extraFiles: uploaded.extraFiles,
+         desktop,
+       },
+       {
+diff -u -r -N a/test/channel-settings.test.js b/test/channel-settings.test.js
+--- a/test/channel-settings.test.js	1970-01-01 00:00:00.000000000 +0000
++++ b/test/channel-settings.test.js	2026-11-13 09:43:28.140623958 +0000
+@@ -0,0 +1,124 @@
++const test = require("node:test");
++const assert = require("node:assert/strict");
++const fs = require("fs");
++const os = require("os");
++const path = require("path");
++const { putDefault, getDefault, listDefaults } = require("../lib/channel-defaults");
++const { buildPlatformPayloads, buildYoutubeTitle, TITLE_LIMIT } = require("../lib/channel-settings");
++const { filesFromRequest } = require("../lib/job-uploads");
++const { createPublishJob } = require("../lib/publish-job");
++
++function deps(extra) {
++  return Object.assign({
++    getClient: () => ({ id: "shop", name: "가게" }),
++    getChannel: (id) => ({ id, name: id, kind: "api" }),
++    isRpaKind: () => false,
++    resolvePlan: () => ({ isPaid: true, usedThisMonth: 0, freeLimit: 10, planId: "starter" }),
++    store: {
++      parseSeoulLocalDateTime: () => null,
++      isScheduleTooFar: () => false,
++      isFutureSeoulLocal: () => false,
++      addJob: () => null,
++      RPA_STATUS_QUEUED: "대기",
++    },
++  }, extra || {});
++}
++
++const files = [{ originalName: "a.mp4", storedName: "a.mp4", mimeType: "video/mp4", size: 10 }];
++
++test("defaults stay per store and per connected account", () => {
++  const file = path.join(os.tmpdir(), "onepost-defaults-" + Date.now() + ".json");
++  putDefault(file, { clientId: "shop-a", channelId: "youtube", accountId: "acc-1", settings: { tags: "김치" } });
++  putDefault(file, { clientId: "shop-a", channelId: "youtube", accountId: "acc-2", settings: { tags: "서울" } });
++  putDefault(file, { clientId: "shop-b", channelId: "youtube", accountId: "acc-1", settings: { tags: "부산" } });
++  assert.equal(getDefault(file, { clientId: "shop-a", channelId: "youtube", accountId: "acc-1" }).settings.tags, "김치");
++  assert.equal(getDefault(file, { clientId: "shop-a", channelId: "youtube", accountId: "acc-2" }).settings.tags, "서울");
++  assert.equal(listDefaults(file, "shop-b")[0].settings.tags, "부산");
++  fs.unlinkSync(file);
++});
++
++test("youtube title keeps shorts and tags inside 100 chars and synthetic stays off", () => {
++  const payload = buildPlatformPayloads({
++    youtube: { tags: "김치, 서울, 브이로그, 네번째", synthetic: false, appendShorts: true, categoryId: "26" },
++  }, { title: "맛집", caption: "설명", durationSec: 40 }).youtube;
++  assert.equal(payload.snippet.title.endsWith("#shorts"), true);
++  assert.equal(payload.snippet.title.includes("#김치"), true);
++  assert.equal(payload.snippet.title.includes("#네번째"), false);
++  assert.equal(payload.snippet.title.length <= TITLE_LIMIT, true);
++  assert.equal(payload.snippet.description.endsWith("#shorts"), true);
++  assert.equal((payload.snippet.description.match(/#shorts/gi) || []).length, 1);
++  assert.equal(payload.snippet.defaultLanguage, "ko");
++  assert.equal(payload.snippet.defaultAudioLanguage, "ko");
++  assert.equal(payload.snippet.categoryId, "26");
++  assert.equal(payload.status.containsSyntheticMedia, false);
++  assert.equal(Object.prototype.hasOwnProperty.call(payload.status, "privacyStatus"), false);
++  const trimmed = buildYoutubeTitle({ title: "가".repeat(100), tags: "태그", durationSec: 30, appendShorts: true });
++  assert.equal(trimmed.length <= 100, true);
++  assert.equal(trimmed.endsWith("#shorts"), true);
++  assert.equal(trimmed.includes("#태그"), false);
++});
++
++test("instagram collaborators and cover, tiktok ai flag", () => {
++  const ig = buildPlatformPayloads({
++    instagram: { collaborators: "@cafe, bad name, shop, third, fourth", shareToFeed: true, audioName: "원본", thumbOffsetSec: 3 },
++  }, { extraFiles: { instagramCover: { storedName: "cover.jpg" } } }).instagram;
++  assert.deepEqual(ig.collaborators, ["cafe", "shop", "third"]);
++  assert.equal(ig.share_to_feed, true);
++  assert.equal(ig.audio_name, "원본");
++  assert.equal(ig.cover_url, "/uploads/cover.jpg");
++  assert.equal(ig.thumb_offset, undefined);
++  assert.equal(Object.prototype.hasOwnProperty.call(buildPlatformPayloads({}, { extraFiles: { facebookThumbnail: { storedName: "fb.jpg" } } }).facebook, "thumbnailStoredName"), false);
++  const offset = buildPlatformPayloads({ instagram: { thumbOffsetSec: 2, shareToFeed: false } }).instagram;
++  assert.equal(offset.thumb_offset, 2);
++  assert.equal(offset.share_to_feed, false);
++  const tiktok = buildPlatformPayloads({ tiktok: { isAigc: true } }).tiktok;
++  assert.equal(tiktok.is_aigc, true);
++  const threads = buildPlatformPayloads({ threads: { replyControl: "mentioned_only", topicTag: "#맛집" } }).threads;
++  assert.equal(threads.reply_control, "mentioned_only");
++  assert.equal(threads.topic_tag, "맛집");
++});
++
++test("publish job saves defaults and keeps the synthetic flag opt-in", () => {
++  const file = path.join(os.tmpdir(), "onepost-job-defaults-" + Date.now() + ".json");
++  const result = createPublishJob({
++    email: "owner@example.test",
++    dryRun: true,
++    body: {
++      clientId: "shop",
++      mediaType: "video",
++      channels: ["youtube", "instagram", "tiktok"],
++      title: "맛집",
++      caption: "설명",
++      youtubeDurationSec: 20,
++      channelSettings: {
++        youtube: { synthetic: false, tags: "김치", appendShorts: true },
++        instagram: { collaborators: "cafe", shareToFeed: true },
++        tiktok: { isAigc: true },
++      },
++      saveChannelDefaults: { youtube: true, instagram: true },
++      channelAccounts: { youtube: "acc-1" },
++      tiktokOptions: { privacyLevel: "PUBLIC_TO_EVERYONE", isAigc: true },
++    },
++    files,
++  }, deps({ defaultsFile: file }));
++  assert.equal(result.ok, true);
++  assert.equal(result.job.youtubeSynthetic, false);
++  assert.equal(result.job.platformPayloads.youtube.status.privacyStatus, undefined);
++  assert.equal(result.tasks.find((task) => task.channel === "youtube").caption, "설명");
++  assert.equal(result.job.tiktokOptions.isAigc, true);
++  assert.equal(getDefault(file, { clientId: "shop", channelId: "youtube", accountId: "acc-1" }).settings.tags, "김치");
++  assert.equal(getDefault(file, { clientId: "shop", channelId: "instagram", accountId: "" }).settings.collaborators, "cafe");
++  fs.unlinkSync(file);
++});
++
++test("thumbnail and cover uploads are stored and addressed under /uploads", () => {
++  const parsed = filesFromRequest({
++    files: [{ originalname: "a.mp4", filename: "a.mp4", mimetype: "video/mp4", size: 10 }],
++    youtubeThumbnail: [{ originalname: "thumb.jpg", filename: "thumb.jpg", mimetype: "image/jpeg", size: 4 }],
++    instagramCover: [{ originalname: "cover.jpg", filename: "cover.jpg", mimetype: "image/jpeg", size: 5 }],
++  });
++  assert.equal(parsed.files[0].storedName, "a.mp4");
++  const payload = buildPlatformPayloads({}, { extraFiles: parsed.extraFiles });
++  assert.equal(payload.youtube.thumbnail.url, "/uploads/thumb.jpg");
++  assert.equal(payload.instagram.cover_url, "/uploads/cover.jpg");
++});
